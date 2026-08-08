@@ -33,6 +33,12 @@ This document answers two questions: what this engine actually proves in 2026, a
 - F04 — PostgreSQL operational tooling is a major adoption advantage.
 - F05 — The active-standby model improves availability but not write or capacity scale.
 
+### Dedicated AgensGraph refactor
+
+This breadth-oriented file is retained for corpus compatibility. The current source-level audit is the multi-spec [AgensGraph dossier](./agensgraph/00-index.md), which pins v2.17.0 and a separate 2.18-devel snapshot, reconstructs inherited label relations and automatic indexes, audits Cypher lowering and graph executor nodes, verifies the official regression schedule locally, and defines the PB/S3/10x qualification program.
+
+Do not use this overview's compact distribution, object-storage, scale, transaction, or benchmark statements when the dedicated dossier supplies a version-qualified answer.
+
 ### Bottom-line fit against zu's target
 
 - Very-low latency: compare hot point and bounded traversal paths; never extrapolate from scans or algorithms.

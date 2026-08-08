@@ -44,7 +44,7 @@ Every engine receives one file. Kuzu and RedisGraph remain separate historical f
 - [MillenniumDB](./engine-millenniumdb.md) — research persistent graph database; active research project with small community.
 - [DuckPGQ](./engine-duckpgq.md) — analytical SQL/PGQ extension; active CWI project.
 - [Apache AGE](./engine-apache_age.md) — PostgreSQL graph extension; active Apache project.
-- [AgensGraph](./engine-agensgraph.md) — PostgreSQL-derived multi-model graph database; active 2.17 documentation line.
+- [AgensGraph — dedicated 2026 source audit](./agensgraph/00-index.md) — PostgreSQL-derived multi-model graph database; v2.17.0 plus separately pinned public 2.18-devel source. [Breadth overview](./engine-agensgraph.md).
 - [Amazon Neptune Database](./engine-amazon_neptune.md) — managed cloud graph database; active AWS service.
 - [Amazon Neptune Analytics](./engine-amazon_neptune_analytics.md) — managed in-memory graph analytics; active AWS service.
 - [Google Cloud Spanner Graph](./engine-google_spanner_graph.md) — managed relational-property-graph database; active Enterprise/Enterprise Plus feature; docs updated 2026-07-22.
