@@ -57,7 +57,7 @@ Every engine receives one file. Kuzu and RedisGraph remain separate historical f
 - [Apache Jena TDB2](./engine-apache_jena_tdb2.md) — embedded RDF store; active Apache project.
 - [OpenLink Virtuoso](./engine-openlink_virtuoso.md) — multi-model SQL/RDF server; active commercial/open-source lineage.
 - [Oxigraph](./engine-oxigraph.md) — embedded Rust RDF store; active and explicitly still optimizing.
-- [AllegroGraph](./engine-allegrograph.md) — commercial RDF/knowledge graph database; active 9.x line.
+- [AllegroGraph — dedicated 2026 documentation and public-source audit](./allegrograph/00-index.md) — commercial RDF/knowledge graph database; 9.0.2 server contract plus pinned client/container source. [Breadth overview](./engine-allegrograph.md).
 - [Blazegraph (legacy)](./engine-blazegraph.md) — RDF graph database; archived repository; historical benchmark baseline.
 - [RedisGraph (legacy)](./engine-redisgraph.md) — matrix property graph; end-of-life lineage continued by FalkorDB.
 - [Aerospike Graph — dedicated 2026 source audit](./aerospike/00-index.md) — stateless Gremlin compute over distributed KV storage; released 3.2.3 plus pinned public 3.3.0-SNAPSHOT source. [Breadth overview](./engine-aerospike_graph.md).

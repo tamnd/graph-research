@@ -33,6 +33,12 @@ This document answers two questions: what this engine actually proves in 2026, a
 - F04 — JSON-LD document access broadens the data model.
 - F05 — Current performance claims require reproducible datasets and licensed configuration disclosure.
 
+### Dedicated AllegroGraph refactor
+
+This breadth-oriented file is retained for corpus compatibility. The current source- and documentation-audited analysis is the multi-spec [AllegroGraph dossier](./allegrograph/00-index.md), which pins 9.0.2, audits the public clients and Docker packaging at exact commits, reconstructs documented triple-index and query-engine behavior, separates FedShard from MMR, qualifies the historical trillion-triple load, and defines an S3/PB/10x validation program.
+
+Do not use this overview's compact replication, object-storage, scale, licensing, or benchmark statements when the dedicated dossier supplies a version-qualified answer.
+
 ### Bottom-line fit against zu's target
 
 - Very-low latency: compare hot point and bounded traversal paths; never extrapolate from scans or algorithms.
