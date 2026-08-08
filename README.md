@@ -35,6 +35,13 @@ Research is current to the date recorded in each specification. Database
 releases, pricing, source heads, issues, and managed-service behavior change;
 revalidate decision-critical claims before adopting them.
 
+Start with:
+
+- [Research corpus index](./docs/research/000-index.md)
+- [Cross-engine landscape](./docs/research/system-landscape-scorecard.md)
+- [Target architecture](./docs/research/system-target-architecture.md)
+- [Reproducible benchmark and 10x protocol](./docs/research/system-benchmark-and-10x-claim.md)
+
 ## License
 
 The repository's original text and scripts are available under the
