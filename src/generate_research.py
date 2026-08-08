@@ -222,6 +222,14 @@ def engine_lines(e: Engine) -> list[str]:
             "This breadth-oriented file is retained for corpus compatibility. The current source-level audit is the multi-spec [AgensGraph dossier](./agensgraph/00-index.md), which pins v2.17.0 and a separate 2.18-devel snapshot, reconstructs inherited label relations and automatic indexes, audits Cypher lowering and graph executor nodes, verifies the official regression schedule locally, and defines the PB/S3/10x qualification program.",
             "",
             "Do not use this overview's compact distribution, object-storage, scale, transaction, or benchmark statements when the dedicated dossier supplies a version-qualified answer.")
+    if e.slug == "allegrograph":
+        add(lines,
+            "",
+            "### Dedicated AllegroGraph refactor",
+            "",
+            "This breadth-oriented file is retained for corpus compatibility. The current source- and documentation-audited analysis is the multi-spec [AllegroGraph dossier](./allegrograph/00-index.md), which pins 9.0.2, audits the public clients and Docker packaging at exact commits, reconstructs documented triple-index and query-engine behavior, separates FedShard from MMR, qualifies the historical trillion-triple load, and defines an S3/PB/10x validation program.",
+            "",
+            "Do not use this overview's compact replication, object-storage, scale, licensing, or benchmark statements when the dedicated dossier supplies a version-qualified answer.")
     add(lines,
         "",
         "### Bottom-line fit against zu's target",
@@ -464,6 +472,8 @@ def index_lines() -> list[str]:
             lines.append(f"- [{e.name} — dedicated 2026 source audit](./aerospike/00-index.md) — {e.family}; released 3.2.3 plus pinned public 3.3.0-SNAPSHOT source. [Breadth overview](./engine-{e.slug}.md).")
         elif e.slug == "agensgraph":
             lines.append(f"- [{e.name} — dedicated 2026 source audit](./agensgraph/00-index.md) — {e.family}; v2.17.0 plus separately pinned public 2.18-devel source. [Breadth overview](./engine-{e.slug}.md).")
+        elif e.slug == "allegrograph":
+            lines.append(f"- [{e.name} — dedicated 2026 documentation and public-source audit](./allegrograph/00-index.md) — {e.family}; 9.0.2 server contract plus pinned client/container source. [Breadth overview](./engine-{e.slug}.md).")
         else:
             lines.append(f"- [{e.name}](./engine-{e.slug}.md) — {e.family}; {e.status}.")
     lines += [
