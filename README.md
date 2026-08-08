@@ -45,6 +45,7 @@ Start with:
 Deep source audits:
 
 - [Aerospike Graph](./docs/research/aerospike/00-index.md)
+- [AgensGraph](./docs/research/agensgraph/00-index.md)
 
 ## License
 
