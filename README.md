@@ -25,8 +25,9 @@ does not turn vendor claims into measured facts.
 
 - [`docs/`](./docs/) contains architecture specifications, the engine
   landscape, source audits, and benchmark protocols.
-- [`src/`](./src/) contains deterministic documentation generators and
-  repository validation tools.
+- [`src/`](./src/) contains corpus maintenance scripts and repository
+  validation tools. Dedicated Aerospike research is maintained directly as
+  reviewed Markdown rather than generated output.
 - [CONTRIBUTING.md](./CONTRIBUTING.md) defines evidence and change standards.
 
 ## Status
