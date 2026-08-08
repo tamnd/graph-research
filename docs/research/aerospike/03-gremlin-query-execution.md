@@ -2,6 +2,7 @@
 
 Research cut: `2026-08-08`
 Evidence status: current-source audit; vendor claims remain claims until reproduced
+Maintenance: manually maintained Markdown; no documentation generator
 Scope: TinkerPop surface, traversal rewrites, storage I/O, batching, pagination, parallelism, caching, and observability
 Pinned AGS source: `ad0983e5519cbd3705f70113afd7df048c568045` (`3.3.0-SNAPSHOT`, branch `3.x-dev`)
 Newest prerelease observed: `v3.3.0-rc5` at `f4980a73f64bde1f3db0b30e917f3ec7fb147ce3`; not the stable baseline
@@ -13,20 +14,37 @@ AGS is not a declarative cost-based graph optimizer in the relational sense. Tin
 
 The source exposes strategies for graph-step folding, batch vertex/edge reads, edge-to-vertex and otherV batching, adjacent-ID shortcuts, cached reads, graph/local counts, filter pushdown, hasId, drop, merge, elementMap, query tracing, scan profiling, and verification. The benchmark must capture the optimized traversal/profile and backend operation counts so a fast result cannot be attributed vaguely to "Gremlin optimization."
 
+Two traversals can return the same vertices while asking the provider to do very different work. The first form below starts from an exact ID and gives AGS a point-read root. The second requires a label and property access path. If the matching typed vertex index is absent, it can become a scan. The third form is intentionally dangerous because it starts with every edge.
+
+```groovy
+// Point-rooted traversal. This is the latency-friendly shape.
+g.V(customerId)
+ .out('usesDevice')
+ .has('riskScore', gt(700L))
+ .limit(20)
+ .valueMap('riskScore', 'lastSeen')
+
+// Index-rooted only when a compatible vertex index exists.
+g.V()
+ .hasLabel('Customer')
+ .has('countryCode', 'VN')
+ .limit(100)
+
+// Global edge root. Treat this as scan-class work.
+g.E()
+ .hasLabel('usesDevice')
+ .count()
+```
+
+The benchmark records the submitted bytecode and the provider-optimized traversal. Reviewing only the Gremlin text misses whether `has`, `limit`, projection, or adjacent-vertex access was folded into a provider step. Reviewing only latency misses whether the query consumed a secondary-index stream or a global scan.
+
 ## Read-path classes and decisions
 
-- Gremlin bytecode arrives through TinkerPop Gremlin Server over WebSocket.
-- Provider strategies rewrite eligible traversals before iterator execution.
-- ID-rooted vertex lookup becomes a direct Aerospike record read.
-- Multiple known IDs can become an Aerospike batch read split by cluster node.
-- Vertex has()/hasLabel() can use a secondary index when a compatible index exists.
-- Remaining predicates may compile into Aerospike filter expressions for server-side rejection.
-- Ordinary vertex adjacency can skip individual edge materialization for out()/in() shapes that only need adjacent vertices.
-- Supernode adjacency starts with specialized secondary-index queries against edge records.
-- Global scans use paged query machinery and are qualitatively more expensive than point/bounded paths.
-- Per-query parallelization draws from a shared executor and is disallowed in transaction traversals.
-- The default record cache is transaction/request local; the global mode is shared within one graph instance and may be stale.
-- Query results themselves are not cached by the AGS cache feature.
+Gremlin bytecode arrives through TinkerPop Gremlin Server over WebSocket, after which provider strategies rewrite eligible traversals before iterator execution. An ID-rooted vertex lookup becomes a direct record read. Multiple known IDs can become a batch read split by cluster node. A compatible vertex `has()` or `hasLabel()` predicate can use a secondary index, and remaining compatible predicates can become Database filter expressions that reject records before they cross the wire.
+
+For ordinary vertices, an adjacent-vertex traversal can use cached endpoint identity and avoid materializing an edge object that the query never projects. Supernodes take a different path: specialized secondary-index queries locate edge records, after which paging, filtering, and endpoint reads continue. Global scans use the paged query machinery and have a completely different tail and resource envelope from point or bounded paths.
+
+Per-query parallelization draws from a shared executor and is not allowed inside transaction traversals. The default record cache belongs to a request or transaction. Global mode shares cached records within one graph instance but may return stale data, and separate AGS instances maintain separate contents. This cache stores records, not completed query results.
 
 ## Key source defaults observed at the pinned commit
 
@@ -78,956 +96,666 @@ The source exposes strategies for graph-step folding, batch vertex/edge reads, e
 
 ## Semantic hazards
 
-- A traversal that is logically equivalent in Gremlin may miss a provider rewrite because its step arrangement differs.
-- String indexes support full-string equality, not substring search.
-- Double values cannot use the documented vertex property indexes; scaled Long is the recommended indexed substitute.
-- Global edge label/property lookup scans because general edge indexes are absent.
-- High-cardinality indexes can speed roots; low-cardinality indexes may generate large query streams and consume Aerospike query threads.
-- MergeE on supernodes can trigger secondary-index queries, and documented query-thread limits can reject excess concurrency.
-- Parallelize may improve a single high-fanout I/O-bound query while harming aggregate throughput or tail latency.
-- Global cache is an explicit stale-read tradeoff and is per AGS instance, so a load-balanced fleet has independent cache contents.
-- Warm-cache comparisons are invalid unless every competitor receives equivalent preconditioning and cache memory is charged.
+A traversal that is logically equivalent in Gremlin may miss a provider rewrite because its step arrangement differs.
+String indexes support full-string equality, not substring search.
+Double values cannot use the documented vertex property indexes; scaled Long is the recommended indexed substitute.
+Global edge label/property lookup scans because general edge indexes are absent.
+High-cardinality indexes can speed roots; low-cardinality indexes may generate large query streams and consume Aerospike query threads.
+MergeE on supernodes can trigger secondary-index queries, and documented query-thread limits can reject excess concurrency.
+Parallelize may improve a single high-fanout I/O-bound query while harming aggregate throughput or tail latency.
+Global cache is an explicit stale-read tradeoff and is per AGS instance, so a load-balanced fleet has independent cache contents.
+Warm-cache comparisons are invalid unless every competitor receives equivalent preconditioning and cache memory is charged.
 
 ## Query qualification cases
 
-Every case is a separate result cell. Do not average across cases, silently retry failures, or substitute a smaller semantic operation. Capture cold, warm, steady-state, degraded, and recovery intervals where applicable.
-
-### Q001 — query: V(id)
-
-- Purpose: Prove one point-root path and stable ID semantics.
-- Setup: Use identical graph state and semantic result oracle; capture TinkerPop profile, Zipkin spans, AGS metrics, and Aerospike command histograms.
-- Workload: Execute the smallest semantically complete operation for `V(id)`, then repeat under controlled concurrency and skew.
-- Required counters: client HDR latency, AGS queue/worker/heap/GC, cache hits, record reads, batch keys, sindex records, bytes, result cardinality, cancellations
-- Correctness oracle: Compare exact result bags/order/path identity and durable state against the model oracle; verify after restart when writes occur.
-- Failure interpretation: Any unsupported behavior, timeout, stale value, semantic mismatch, hidden scan, or unbounded resource growth is a first-class result.
-- Evidence anchors: S09,S11–S19,S27,S33,S36–S41,S45
-- Result status: `NOT RUN`; no number from this protocol is claimed by this audit.
-- Artifact requirement: immutable config, dataset manifest, query text/bytecode, raw samples, traces, server stats, and cost sheet.
-
-### Q002 — query: V(id1,id2,...)
-
-- Purpose: Observe batch partitioning by database node.
-- Setup: Use identical graph state and semantic result oracle; capture TinkerPop profile, Zipkin spans, AGS metrics, and Aerospike command histograms.
-- Workload: Execute the smallest semantically complete operation for `V(id1,id2,...)`, then repeat under controlled concurrency and skew.
-- Required counters: client HDR latency, AGS queue/worker/heap/GC, cache hits, record reads, batch keys, sindex records, bytes, result cardinality, cancellations
-- Correctness oracle: Compare exact result bags/order/path identity and durable state against the model oracle; verify after restart when writes occur.
-- Failure interpretation: Any unsupported behavior, timeout, stale value, semantic mismatch, hidden scan, or unbounded resource growth is a first-class result.
-- Evidence anchors: S09,S11–S19,S27,S33,S36–S41,S45
-- Result status: `NOT RUN`; no number from this protocol is claimed by this audit.
-- Artifact requirement: immutable config, dataset manifest, query text/bytecode, raw samples, traces, server stats, and cost sheet.
-
-### Q003 — query: V().hasLabel indexed
-
-- Purpose: Verify secondary index rather than scan.
-- Setup: Use identical graph state and semantic result oracle; capture TinkerPop profile, Zipkin spans, AGS metrics, and Aerospike command histograms.
-- Workload: Execute the smallest semantically complete operation for `V().hasLabel indexed`, then repeat under controlled concurrency and skew.
-- Required counters: client HDR latency, AGS queue/worker/heap/GC, cache hits, record reads, batch keys, sindex records, bytes, result cardinality, cancellations
-- Correctness oracle: Compare exact result bags/order/path identity and durable state against the model oracle; verify after restart when writes occur.
-- Failure interpretation: Any unsupported behavior, timeout, stale value, semantic mismatch, hidden scan, or unbounded resource growth is a first-class result.
-- Evidence anchors: S09,S11–S19,S27,S33,S36–S41,S45
-- Result status: `NOT RUN`; no number from this protocol is claimed by this audit.
-- Artifact requirement: immutable config, dataset manifest, query text/bytecode, raw samples, traces, server stats, and cost sheet.
-
-### Q004 — query: V().hasLabel unindexed
-
-- Purpose: Expose scan and scan-disable behavior.
-- Setup: Use identical graph state and semantic result oracle; capture TinkerPop profile, Zipkin spans, AGS metrics, and Aerospike command histograms.
-- Workload: Execute the smallest semantically complete operation for `V().hasLabel unindexed`, then repeat under controlled concurrency and skew.
-- Required counters: client HDR latency, AGS queue/worker/heap/GC, cache hits, record reads, batch keys, sindex records, bytes, result cardinality, cancellations
-- Correctness oracle: Compare exact result bags/order/path identity and durable state against the model oracle; verify after restart when writes occur.
-- Failure interpretation: Any unsupported behavior, timeout, stale value, semantic mismatch, hidden scan, or unbounded resource growth is a first-class result.
-- Evidence anchors: S09,S11–S19,S27,S33,S36–S41,S45
-- Result status: `NOT RUN`; no number from this protocol is claimed by this audit.
-- Artifact requirement: immutable config, dataset manifest, query text/bytecode, raw samples, traces, server stats, and cost sheet.
-
-### Q005 — query: V().has string equality
-
-- Purpose: Use compatible string index.
-- Setup: Use identical graph state and semantic result oracle; capture TinkerPop profile, Zipkin spans, AGS metrics, and Aerospike command histograms.
-- Workload: Execute the smallest semantically complete operation for `V().has string equality`, then repeat under controlled concurrency and skew.
-- Required counters: client HDR latency, AGS queue/worker/heap/GC, cache hits, record reads, batch keys, sindex records, bytes, result cardinality, cancellations
-- Correctness oracle: Compare exact result bags/order/path identity and durable state against the model oracle; verify after restart when writes occur.
-- Failure interpretation: Any unsupported behavior, timeout, stale value, semantic mismatch, hidden scan, or unbounded resource growth is a first-class result.
-- Evidence anchors: S09,S11–S19,S27,S33,S36–S41,S45
-- Result status: `NOT RUN`; no number from this protocol is claimed by this audit.
-- Artifact requirement: immutable config, dataset manifest, query text/bytecode, raw samples, traces, server stats, and cost sheet.
-
-### Q006 — query: V().has numeric equality
-
-- Purpose: Use compatible numeric index.
-- Setup: Use identical graph state and semantic result oracle; capture TinkerPop profile, Zipkin spans, AGS metrics, and Aerospike command histograms.
-- Workload: Execute the smallest semantically complete operation for `V().has numeric equality`, then repeat under controlled concurrency and skew.
-- Required counters: client HDR latency, AGS queue/worker/heap/GC, cache hits, record reads, batch keys, sindex records, bytes, result cardinality, cancellations
-- Correctness oracle: Compare exact result bags/order/path identity and durable state against the model oracle; verify after restart when writes occur.
-- Failure interpretation: Any unsupported behavior, timeout, stale value, semantic mismatch, hidden scan, or unbounded resource growth is a first-class result.
-- Evidence anchors: S09,S11–S19,S27,S33,S36–S41,S45
-- Result status: `NOT RUN`; no number from this protocol is claimed by this audit.
-- Artifact requirement: immutable config, dataset manifest, query text/bytecode, raw samples, traces, server stats, and cost sheet.
-
-### Q007 — query: V().has numeric range
-
-- Purpose: Inspect range filter and remaining predicates.
-- Setup: Use identical graph state and semantic result oracle; capture TinkerPop profile, Zipkin spans, AGS metrics, and Aerospike command histograms.
-- Workload: Execute the smallest semantically complete operation for `V().has numeric range`, then repeat under controlled concurrency and skew.
-- Required counters: client HDR latency, AGS queue/worker/heap/GC, cache hits, record reads, batch keys, sindex records, bytes, result cardinality, cancellations
-- Correctness oracle: Compare exact result bags/order/path identity and durable state against the model oracle; verify after restart when writes occur.
-- Failure interpretation: Any unsupported behavior, timeout, stale value, semantic mismatch, hidden scan, or unbounded resource growth is a first-class result.
-- Evidence anchors: S09,S11–S19,S27,S33,S36–S41,S45
-- Result status: `NOT RUN`; no number from this protocol is claimed by this audit.
-- Artifact requirement: immutable config, dataset manifest, query text/bytecode, raw samples, traces, server stats, and cost sheet.
-
-### Q008 — query: V().has Double
-
-- Purpose: Expose unindexed fallback.
-- Setup: Use identical graph state and semantic result oracle; capture TinkerPop profile, Zipkin spans, AGS metrics, and Aerospike command histograms.
-- Workload: Execute the smallest semantically complete operation for `V().has Double`, then repeat under controlled concurrency and skew.
-- Required counters: client HDR latency, AGS queue/worker/heap/GC, cache hits, record reads, batch keys, sindex records, bytes, result cardinality, cancellations
-- Correctness oracle: Compare exact result bags/order/path identity and durable state against the model oracle; verify after restart when writes occur.
-- Failure interpretation: Any unsupported behavior, timeout, stale value, semantic mismatch, hidden scan, or unbounded resource growth is a first-class result.
-- Evidence anchors: S09,S11–S19,S27,S33,S36–S41,S45
-- Result status: `NOT RUN`; no number from this protocol is claimed by this audit.
-- Artifact requirement: immutable config, dataset manifest, query text/bytecode, raw samples, traces, server stats, and cost sheet.
-
-### Q009 — query: V().has substring
-
-- Purpose: Expose full scan and filter cost.
-- Setup: Use identical graph state and semantic result oracle; capture TinkerPop profile, Zipkin spans, AGS metrics, and Aerospike command histograms.
-- Workload: Execute the smallest semantically complete operation for `V().has substring`, then repeat under controlled concurrency and skew.
-- Required counters: client HDR latency, AGS queue/worker/heap/GC, cache hits, record reads, batch keys, sindex records, bytes, result cardinality, cancellations
-- Correctness oracle: Compare exact result bags/order/path identity and durable state against the model oracle; verify after restart when writes occur.
-- Failure interpretation: Any unsupported behavior, timeout, stale value, semantic mismatch, hidden scan, or unbounded resource growth is a first-class result.
-- Evidence anchors: S09,S11–S19,S27,S33,S36–S41,S45
-- Result status: `NOT RUN`; no number from this protocol is claimed by this audit.
-- Artifact requirement: immutable config, dataset manifest, query text/bytecode, raw samples, traces, server stats, and cost sheet.
-
-### Q010 — query: compound equality
-
-- Purpose: Observe expression-index selection.
-- Setup: Use identical graph state and semantic result oracle; capture TinkerPop profile, Zipkin spans, AGS metrics, and Aerospike command histograms.
-- Workload: Execute the smallest semantically complete operation for `compound equality`, then repeat under controlled concurrency and skew.
-- Required counters: client HDR latency, AGS queue/worker/heap/GC, cache hits, record reads, batch keys, sindex records, bytes, result cardinality, cancellations
-- Correctness oracle: Compare exact result bags/order/path identity and durable state against the model oracle; verify after restart when writes occur.
-- Failure interpretation: Any unsupported behavior, timeout, stale value, semantic mismatch, hidden scan, or unbounded resource growth is a first-class result.
-- Evidence anchors: S09,S11–S19,S27,S33,S36–S41,S45
-- Result status: `NOT RUN`; no number from this protocol is claimed by this audit.
-- Artifact requirement: immutable config, dataset manifest, query text/bytecode, raw samples, traces, server stats, and cost sheet.
-
-### Q011 — query: two eligible indexes
-
-- Purpose: Verify cardinality-based most-selective root.
-- Setup: Use identical graph state and semantic result oracle; capture TinkerPop profile, Zipkin spans, AGS metrics, and Aerospike command histograms.
-- Workload: Execute the smallest semantically complete operation for `two eligible indexes`, then repeat under controlled concurrency and skew.
-- Required counters: client HDR latency, AGS queue/worker/heap/GC, cache hits, record reads, batch keys, sindex records, bytes, result cardinality, cancellations
-- Correctness oracle: Compare exact result bags/order/path identity and durable state against the model oracle; verify after restart when writes occur.
-- Failure interpretation: Any unsupported behavior, timeout, stale value, semantic mismatch, hidden scan, or unbounded resource growth is a first-class result.
-- Evidence anchors: S09,S11–S19,S27,S33,S36–S41,S45
-- Result status: `NOT RUN`; no number from this protocol is claimed by this audit.
-- Artifact requirement: immutable config, dataset manifest, query text/bytecode, raw samples, traces, server stats, and cost sheet.
-
-### Q012 — query: stale cardinality metadata
-
-- Purpose: Measure plan lag after data distribution changes.
-- Setup: Use identical graph state and semantic result oracle; capture TinkerPop profile, Zipkin spans, AGS metrics, and Aerospike command histograms.
-- Workload: Execute the smallest semantically complete operation for `stale cardinality metadata`, then repeat under controlled concurrency and skew.
-- Required counters: client HDR latency, AGS queue/worker/heap/GC, cache hits, record reads, batch keys, sindex records, bytes, result cardinality, cancellations
-- Correctness oracle: Compare exact result bags/order/path identity and durable state against the model oracle; verify after restart when writes occur.
-- Failure interpretation: Any unsupported behavior, timeout, stale value, semantic mismatch, hidden scan, or unbounded resource growth is a first-class result.
-- Evidence anchors: S09,S11–S19,S27,S33,S36–S41,S45
-- Result status: `NOT RUN`; no number from this protocol is claimed by this audit.
-- Artifact requirement: immutable config, dataset manifest, query text/bytecode, raw samples, traces, server stats, and cost sheet.
-
-### Q013 — query: outE label
-
-- Purpose: Count vertex and packed-edge reads.
-- Setup: Use identical graph state and semantic result oracle; capture TinkerPop profile, Zipkin spans, AGS metrics, and Aerospike command histograms.
-- Workload: Execute the smallest semantically complete operation for `outE label`, then repeat under controlled concurrency and skew.
-- Required counters: client HDR latency, AGS queue/worker/heap/GC, cache hits, record reads, batch keys, sindex records, bytes, result cardinality, cancellations
-- Correctness oracle: Compare exact result bags/order/path identity and durable state against the model oracle; verify after restart when writes occur.
-- Failure interpretation: Any unsupported behavior, timeout, stale value, semantic mismatch, hidden scan, or unbounded resource growth is a first-class result.
-- Evidence anchors: S09,S11–S19,S27,S33,S36–S41,S45
-- Result status: `NOT RUN`; no number from this protocol is claimed by this audit.
-- Artifact requirement: immutable config, dataset manifest, query text/bytecode, raw samples, traces, server stats, and cost sheet.
-
-### Q014 — query: out adjacent vertices
-
-- Purpose: Verify edge-skipping/batch rewrite.
-- Setup: Use identical graph state and semantic result oracle; capture TinkerPop profile, Zipkin spans, AGS metrics, and Aerospike command histograms.
-- Workload: Execute the smallest semantically complete operation for `out adjacent vertices`, then repeat under controlled concurrency and skew.
-- Required counters: client HDR latency, AGS queue/worker/heap/GC, cache hits, record reads, batch keys, sindex records, bytes, result cardinality, cancellations
-- Correctness oracle: Compare exact result bags/order/path identity and durable state against the model oracle; verify after restart when writes occur.
-- Failure interpretation: Any unsupported behavior, timeout, stale value, semantic mismatch, hidden scan, or unbounded resource growth is a first-class result.
-- Evidence anchors: S09,S11–S19,S27,S33,S36–S41,S45
-- Result status: `NOT RUN`; no number from this protocol is claimed by this audit.
-- Artifact requirement: immutable config, dataset manifest, query text/bytecode, raw samples, traces, server stats, and cost sheet.
-
-### Q015 — query: in adjacent vertices
-
-- Purpose: Verify reverse ordinary adjacency path.
-- Setup: Use identical graph state and semantic result oracle; capture TinkerPop profile, Zipkin spans, AGS metrics, and Aerospike command histograms.
-- Workload: Execute the smallest semantically complete operation for `in adjacent vertices`, then repeat under controlled concurrency and skew.
-- Required counters: client HDR latency, AGS queue/worker/heap/GC, cache hits, record reads, batch keys, sindex records, bytes, result cardinality, cancellations
-- Correctness oracle: Compare exact result bags/order/path identity and durable state against the model oracle; verify after restart when writes occur.
-- Failure interpretation: Any unsupported behavior, timeout, stale value, semantic mismatch, hidden scan, or unbounded resource growth is a first-class result.
-- Evidence anchors: S09,S11–S19,S27,S33,S36–S41,S45
-- Result status: `NOT RUN`; no number from this protocol is claimed by this audit.
-- Artifact requirement: immutable config, dataset manifest, query text/bytecode, raw samples, traces, server stats, and cost sheet.
-
-### Q016 — query: both self-loop
-
-- Purpose: Verify multiplicity and dedup semantics.
-- Setup: Use identical graph state and semantic result oracle; capture TinkerPop profile, Zipkin spans, AGS metrics, and Aerospike command histograms.
-- Workload: Execute the smallest semantically complete operation for `both self-loop`, then repeat under controlled concurrency and skew.
-- Required counters: client HDR latency, AGS queue/worker/heap/GC, cache hits, record reads, batch keys, sindex records, bytes, result cardinality, cancellations
-- Correctness oracle: Compare exact result bags/order/path identity and durable state against the model oracle; verify after restart when writes occur.
-- Failure interpretation: Any unsupported behavior, timeout, stale value, semantic mismatch, hidden scan, or unbounded resource growth is a first-class result.
-- Evidence anchors: S09,S11–S19,S27,S33,S36–S41,S45
-- Result status: `NOT RUN`; no number from this protocol is claimed by this audit.
-- Artifact requirement: immutable config, dataset manifest, query text/bytecode, raw samples, traces, server stats, and cost sheet.
-
-### Q017 — query: otherV
-
-- Purpose: Verify batched adjacent endpoint reads.
-- Setup: Use identical graph state and semantic result oracle; capture TinkerPop profile, Zipkin spans, AGS metrics, and Aerospike command histograms.
-- Workload: Execute the smallest semantically complete operation for `otherV`, then repeat under controlled concurrency and skew.
-- Required counters: client HDR latency, AGS queue/worker/heap/GC, cache hits, record reads, batch keys, sindex records, bytes, result cardinality, cancellations
-- Correctness oracle: Compare exact result bags/order/path identity and durable state against the model oracle; verify after restart when writes occur.
-- Failure interpretation: Any unsupported behavior, timeout, stale value, semantic mismatch, hidden scan, or unbounded resource growth is a first-class result.
-- Evidence anchors: S09,S11–S19,S27,S33,S36–S41,S45
-- Result status: `NOT RUN`; no number from this protocol is claimed by this audit.
-- Artifact requirement: immutable config, dataset manifest, query text/bytecode, raw samples, traces, server stats, and cost sheet.
-
-### Q018 — query: edge-to-vertex
-
-- Purpose: Verify specialized batch step.
-- Setup: Use identical graph state and semantic result oracle; capture TinkerPop profile, Zipkin spans, AGS metrics, and Aerospike command histograms.
-- Workload: Execute the smallest semantically complete operation for `edge-to-vertex`, then repeat under controlled concurrency and skew.
-- Required counters: client HDR latency, AGS queue/worker/heap/GC, cache hits, record reads, batch keys, sindex records, bytes, result cardinality, cancellations
-- Correctness oracle: Compare exact result bags/order/path identity and durable state against the model oracle; verify after restart when writes occur.
-- Failure interpretation: Any unsupported behavior, timeout, stale value, semantic mismatch, hidden scan, or unbounded resource growth is a first-class result.
-- Evidence anchors: S09,S11–S19,S27,S33,S36–S41,S45
-- Result status: `NOT RUN`; no number from this protocol is claimed by this audit.
-- Artifact requirement: immutable config, dataset manifest, query text/bytecode, raw samples, traces, server stats, and cost sheet.
-
-### Q019 — query: has after VertexStep
-
-- Purpose: Verify predicate folding/pushdown.
-- Setup: Use identical graph state and semantic result oracle; capture TinkerPop profile, Zipkin spans, AGS metrics, and Aerospike command histograms.
-- Workload: Execute the smallest semantically complete operation for `has after VertexStep`, then repeat under controlled concurrency and skew.
-- Required counters: client HDR latency, AGS queue/worker/heap/GC, cache hits, record reads, batch keys, sindex records, bytes, result cardinality, cancellations
-- Correctness oracle: Compare exact result bags/order/path identity and durable state against the model oracle; verify after restart when writes occur.
-- Failure interpretation: Any unsupported behavior, timeout, stale value, semantic mismatch, hidden scan, or unbounded resource growth is a first-class result.
-- Evidence anchors: S09,S11–S19,S27,S33,S36–S41,S45
-- Result status: `NOT RUN`; no number from this protocol is claimed by this audit.
-- Artifact requirement: immutable config, dataset manifest, query text/bytecode, raw samples, traces, server stats, and cost sheet.
-
-### Q020 — query: limit after VertexStep
-
-- Purpose: Verify early termination and reduced I/O.
-- Setup: Use identical graph state and semantic result oracle; capture TinkerPop profile, Zipkin spans, AGS metrics, and Aerospike command histograms.
-- Workload: Execute the smallest semantically complete operation for `limit after VertexStep`, then repeat under controlled concurrency and skew.
-- Required counters: client HDR latency, AGS queue/worker/heap/GC, cache hits, record reads, batch keys, sindex records, bytes, result cardinality, cancellations
-- Correctness oracle: Compare exact result bags/order/path identity and durable state against the model oracle; verify after restart when writes occur.
-- Failure interpretation: Any unsupported behavior, timeout, stale value, semantic mismatch, hidden scan, or unbounded resource growth is a first-class result.
-- Evidence anchors: S09,S11–S19,S27,S33,S36–S41,S45
-- Result status: `NOT RUN`; no number from this protocol is claimed by this audit.
-- Artifact requirement: immutable config, dataset manifest, query text/bytecode, raw samples, traces, server stats, and cost sheet.
-
-### Q021 — query: sample after VertexStep
-
-- Purpose: Verify sample semantics without reading all candidates.
-- Setup: Use identical graph state and semantic result oracle; capture TinkerPop profile, Zipkin spans, AGS metrics, and Aerospike command histograms.
-- Workload: Execute the smallest semantically complete operation for `sample after VertexStep`, then repeat under controlled concurrency and skew.
-- Required counters: client HDR latency, AGS queue/worker/heap/GC, cache hits, record reads, batch keys, sindex records, bytes, result cardinality, cancellations
-- Correctness oracle: Compare exact result bags/order/path identity and durable state against the model oracle; verify after restart when writes occur.
-- Failure interpretation: Any unsupported behavior, timeout, stale value, semantic mismatch, hidden scan, or unbounded resource growth is a first-class result.
-- Evidence anchors: S09,S11–S19,S27,S33,S36–S41,S45
-- Result status: `NOT RUN`; no number from this protocol is claimed by this audit.
-- Artifact requirement: immutable config, dataset manifest, query text/bytecode, raw samples, traces, server stats, and cost sheet.
-
-### Q022 — query: local edge count
-
-- Purpose: Verify adjacency-local count without edge fetch.
-- Setup: Use identical graph state and semantic result oracle; capture TinkerPop profile, Zipkin spans, AGS metrics, and Aerospike command histograms.
-- Workload: Execute the smallest semantically complete operation for `local edge count`, then repeat under controlled concurrency and skew.
-- Required counters: client HDR latency, AGS queue/worker/heap/GC, cache hits, record reads, batch keys, sindex records, bytes, result cardinality, cancellations
-- Correctness oracle: Compare exact result bags/order/path identity and durable state against the model oracle; verify after restart when writes occur.
-- Failure interpretation: Any unsupported behavior, timeout, stale value, semantic mismatch, hidden scan, or unbounded resource growth is a first-class result.
-- Evidence anchors: S09,S11–S19,S27,S33,S36–S41,S45
-- Result status: `NOT RUN`; no number from this protocol is claimed by this audit.
-- Artifact requirement: immutable config, dataset manifest, query text/bytecode, raw samples, traces, server stats, and cost sheet.
-
-### Q023 — query: global vertex count
-
-- Purpose: Verify count optimization and exactness during mutation.
-- Setup: Use identical graph state and semantic result oracle; capture TinkerPop profile, Zipkin spans, AGS metrics, and Aerospike command histograms.
-- Workload: Execute the smallest semantically complete operation for `global vertex count`, then repeat under controlled concurrency and skew.
-- Required counters: client HDR latency, AGS queue/worker/heap/GC, cache hits, record reads, batch keys, sindex records, bytes, result cardinality, cancellations
-- Correctness oracle: Compare exact result bags/order/path identity and durable state against the model oracle; verify after restart when writes occur.
-- Failure interpretation: Any unsupported behavior, timeout, stale value, semantic mismatch, hidden scan, or unbounded resource growth is a first-class result.
-- Evidence anchors: S09,S11–S19,S27,S33,S36–S41,S45
-- Result status: `NOT RUN`; no number from this protocol is claimed by this audit.
-- Artifact requirement: immutable config, dataset manifest, query text/bytecode, raw samples, traces, server stats, and cost sheet.
-
-### Q024 — query: global edge count
-
-- Purpose: Verify summary/scan path and exactness.
-- Setup: Use identical graph state and semantic result oracle; capture TinkerPop profile, Zipkin spans, AGS metrics, and Aerospike command histograms.
-- Workload: Execute the smallest semantically complete operation for `global edge count`, then repeat under controlled concurrency and skew.
-- Required counters: client HDR latency, AGS queue/worker/heap/GC, cache hits, record reads, batch keys, sindex records, bytes, result cardinality, cancellations
-- Correctness oracle: Compare exact result bags/order/path identity and durable state against the model oracle; verify after restart when writes occur.
-- Failure interpretation: Any unsupported behavior, timeout, stale value, semantic mismatch, hidden scan, or unbounded resource growth is a first-class result.
-- Evidence anchors: S09,S11–S19,S27,S33,S36–S41,S45
-- Result status: `NOT RUN`; no number from this protocol is claimed by this audit.
-- Artifact requirement: immutable config, dataset manifest, query text/bytecode, raw samples, traces, server stats, and cost sheet.
-
-### Q025 — query: properties projection
-
-- Purpose: Fetch only required map entries.
-- Setup: Use identical graph state and semantic result oracle; capture TinkerPop profile, Zipkin spans, AGS metrics, and Aerospike command histograms.
-- Workload: Execute the smallest semantically complete operation for `properties projection`, then repeat under controlled concurrency and skew.
-- Required counters: client HDR latency, AGS queue/worker/heap/GC, cache hits, record reads, batch keys, sindex records, bytes, result cardinality, cancellations
-- Correctness oracle: Compare exact result bags/order/path identity and durable state against the model oracle; verify after restart when writes occur.
-- Failure interpretation: Any unsupported behavior, timeout, stale value, semantic mismatch, hidden scan, or unbounded resource growth is a first-class result.
-- Evidence anchors: S09,S11–S19,S27,S33,S36–S41,S45
-- Result status: `NOT RUN`; no number from this protocol is claimed by this audit.
-- Artifact requirement: immutable config, dataset manifest, query text/bytecode, raw samples, traces, server stats, and cost sheet.
-
-### Q026 — query: valueMap
-
-- Purpose: Measure requested versus materialized properties.
-- Setup: Use identical graph state and semantic result oracle; capture TinkerPop profile, Zipkin spans, AGS metrics, and Aerospike command histograms.
-- Workload: Execute the smallest semantically complete operation for `valueMap`, then repeat under controlled concurrency and skew.
-- Required counters: client HDR latency, AGS queue/worker/heap/GC, cache hits, record reads, batch keys, sindex records, bytes, result cardinality, cancellations
-- Correctness oracle: Compare exact result bags/order/path identity and durable state against the model oracle; verify after restart when writes occur.
-- Failure interpretation: Any unsupported behavior, timeout, stale value, semantic mismatch, hidden scan, or unbounded resource growth is a first-class result.
-- Evidence anchors: S09,S11–S19,S27,S33,S36–S41,S45
-- Result status: `NOT RUN`; no number from this protocol is claimed by this audit.
-- Artifact requirement: immutable config, dataset manifest, query text/bytecode, raw samples, traces, server stats, and cost sheet.
-
-### Q027 — query: elementMap
-
-- Purpose: Inspect provider-specific projection rewrite.
-- Setup: Use identical graph state and semantic result oracle; capture TinkerPop profile, Zipkin spans, AGS metrics, and Aerospike command histograms.
-- Workload: Execute the smallest semantically complete operation for `elementMap`, then repeat under controlled concurrency and skew.
-- Required counters: client HDR latency, AGS queue/worker/heap/GC, cache hits, record reads, batch keys, sindex records, bytes, result cardinality, cancellations
-- Correctness oracle: Compare exact result bags/order/path identity and durable state against the model oracle; verify after restart when writes occur.
-- Failure interpretation: Any unsupported behavior, timeout, stale value, semantic mismatch, hidden scan, or unbounded resource growth is a first-class result.
-- Evidence anchors: S09,S11–S19,S27,S33,S36–S41,S45
-- Result status: `NOT RUN`; no number from this protocol is claimed by this audit.
-- Artifact requirement: immutable config, dataset manifest, query text/bytecode, raw samples, traces, server stats, and cost sheet.
-
-### Q028 — query: path
-
-- Purpose: Charge path object retention and edge/vertex materialization.
-- Setup: Use identical graph state and semantic result oracle; capture TinkerPop profile, Zipkin spans, AGS metrics, and Aerospike command histograms.
-- Workload: Execute the smallest semantically complete operation for `path`, then repeat under controlled concurrency and skew.
-- Required counters: client HDR latency, AGS queue/worker/heap/GC, cache hits, record reads, batch keys, sindex records, bytes, result cardinality, cancellations
-- Correctness oracle: Compare exact result bags/order/path identity and durable state against the model oracle; verify after restart when writes occur.
-- Failure interpretation: Any unsupported behavior, timeout, stale value, semantic mismatch, hidden scan, or unbounded resource growth is a first-class result.
-- Evidence anchors: S09,S11–S19,S27,S33,S36–S41,S45
-- Result status: `NOT RUN`; no number from this protocol is claimed by this audit.
-- Artifact requirement: immutable config, dataset manifest, query text/bytecode, raw samples, traces, server stats, and cost sheet.
-
-### Q029 — query: simplePath
-
-- Purpose: Charge visited-set memory and compare semantics.
-- Setup: Use identical graph state and semantic result oracle; capture TinkerPop profile, Zipkin spans, AGS metrics, and Aerospike command histograms.
-- Workload: Execute the smallest semantically complete operation for `simplePath`, then repeat under controlled concurrency and skew.
-- Required counters: client HDR latency, AGS queue/worker/heap/GC, cache hits, record reads, batch keys, sindex records, bytes, result cardinality, cancellations
-- Correctness oracle: Compare exact result bags/order/path identity and durable state against the model oracle; verify after restart when writes occur.
-- Failure interpretation: Any unsupported behavior, timeout, stale value, semantic mismatch, hidden scan, or unbounded resource growth is a first-class result.
-- Evidence anchors: S09,S11–S19,S27,S33,S36–S41,S45
-- Result status: `NOT RUN`; no number from this protocol is claimed by this audit.
-- Artifact requirement: immutable config, dataset manifest, query text/bytecode, raw samples, traces, server stats, and cost sheet.
-
-### Q030 — query: dedup
-
-- Purpose: Measure hash state and spill/limit behavior.
-- Setup: Use identical graph state and semantic result oracle; capture TinkerPop profile, Zipkin spans, AGS metrics, and Aerospike command histograms.
-- Workload: Execute the smallest semantically complete operation for `dedup`, then repeat under controlled concurrency and skew.
-- Required counters: client HDR latency, AGS queue/worker/heap/GC, cache hits, record reads, batch keys, sindex records, bytes, result cardinality, cancellations
-- Correctness oracle: Compare exact result bags/order/path identity and durable state against the model oracle; verify after restart when writes occur.
-- Failure interpretation: Any unsupported behavior, timeout, stale value, semantic mismatch, hidden scan, or unbounded resource growth is a first-class result.
-- Evidence anchors: S09,S11–S19,S27,S33,S36–S41,S45
-- Result status: `NOT RUN`; no number from this protocol is claimed by this audit.
-- Artifact requirement: immutable config, dataset manifest, query text/bytecode, raw samples, traces, server stats, and cost sheet.
-
-### Q031 — query: order
-
-- Purpose: Expose full materialization and memory.
-- Setup: Use identical graph state and semantic result oracle; capture TinkerPop profile, Zipkin spans, AGS metrics, and Aerospike command histograms.
-- Workload: Execute the smallest semantically complete operation for `order`, then repeat under controlled concurrency and skew.
-- Required counters: client HDR latency, AGS queue/worker/heap/GC, cache hits, record reads, batch keys, sindex records, bytes, result cardinality, cancellations
-- Correctness oracle: Compare exact result bags/order/path identity and durable state against the model oracle; verify after restart when writes occur.
-- Failure interpretation: Any unsupported behavior, timeout, stale value, semantic mismatch, hidden scan, or unbounded resource growth is a first-class result.
-- Evidence anchors: S09,S11–S19,S27,S33,S36–S41,S45
-- Result status: `NOT RUN`; no number from this protocol is claimed by this audit.
-- Artifact requirement: immutable config, dataset manifest, query text/bytecode, raw samples, traces, server stats, and cost sheet.
-
-### Q032 — query: groupCount
-
-- Purpose: Classify as OLTP traversal or move to OLAP path.
-- Setup: Use identical graph state and semantic result oracle; capture TinkerPop profile, Zipkin spans, AGS metrics, and Aerospike command histograms.
-- Workload: Execute the smallest semantically complete operation for `groupCount`, then repeat under controlled concurrency and skew.
-- Required counters: client HDR latency, AGS queue/worker/heap/GC, cache hits, record reads, batch keys, sindex records, bytes, result cardinality, cancellations
-- Correctness oracle: Compare exact result bags/order/path identity and durable state against the model oracle; verify after restart when writes occur.
-- Failure interpretation: Any unsupported behavior, timeout, stale value, semantic mismatch, hidden scan, or unbounded resource growth is a first-class result.
-- Evidence anchors: S09,S11–S19,S27,S33,S36–S41,S45
-- Result status: `NOT RUN`; no number from this protocol is claimed by this audit.
-- Artifact requirement: immutable config, dataset manifest, query text/bytecode, raw samples, traces, server stats, and cost sheet.
-
-### Q033 — query: repeat depth 2
-
-- Purpose: Measure batched frontier behavior.
-- Setup: Use identical graph state and semantic result oracle; capture TinkerPop profile, Zipkin spans, AGS metrics, and Aerospike command histograms.
-- Workload: Execute the smallest semantically complete operation for `repeat depth 2`, then repeat under controlled concurrency and skew.
-- Required counters: client HDR latency, AGS queue/worker/heap/GC, cache hits, record reads, batch keys, sindex records, bytes, result cardinality, cancellations
-- Correctness oracle: Compare exact result bags/order/path identity and durable state against the model oracle; verify after restart when writes occur.
-- Failure interpretation: Any unsupported behavior, timeout, stale value, semantic mismatch, hidden scan, or unbounded resource growth is a first-class result.
-- Evidence anchors: S09,S11–S19,S27,S33,S36–S41,S45
-- Result status: `NOT RUN`; no number from this protocol is claimed by this audit.
-- Artifact requirement: immutable config, dataset manifest, query text/bytecode, raw samples, traces, server stats, and cost sheet.
-
-### Q034 — query: repeat depth 4
-
-- Purpose: Expose multiplicative frontier and request limits.
-- Setup: Use identical graph state and semantic result oracle; capture TinkerPop profile, Zipkin spans, AGS metrics, and Aerospike command histograms.
-- Workload: Execute the smallest semantically complete operation for `repeat depth 4`, then repeat under controlled concurrency and skew.
-- Required counters: client HDR latency, AGS queue/worker/heap/GC, cache hits, record reads, batch keys, sindex records, bytes, result cardinality, cancellations
-- Correctness oracle: Compare exact result bags/order/path identity and durable state against the model oracle; verify after restart when writes occur.
-- Failure interpretation: Any unsupported behavior, timeout, stale value, semantic mismatch, hidden scan, or unbounded resource growth is a first-class result.
-- Evidence anchors: S09,S11–S19,S27,S33,S36–S41,S45
-- Result status: `NOT RUN`; no number from this protocol is claimed by this audit.
-- Artifact requirement: immutable config, dataset manifest, query text/bytecode, raw samples, traces, server stats, and cost sheet.
-
-### Q035 — query: repeat emit
-
-- Purpose: Verify 3.2.1 optimization and output semantics.
-- Setup: Use identical graph state and semantic result oracle; capture TinkerPop profile, Zipkin spans, AGS metrics, and Aerospike command histograms.
-- Workload: Execute the smallest semantically complete operation for `repeat emit`, then repeat under controlled concurrency and skew.
-- Required counters: client HDR latency, AGS queue/worker/heap/GC, cache hits, record reads, batch keys, sindex records, bytes, result cardinality, cancellations
-- Correctness oracle: Compare exact result bags/order/path identity and durable state against the model oracle; verify after restart when writes occur.
-- Failure interpretation: Any unsupported behavior, timeout, stale value, semantic mismatch, hidden scan, or unbounded resource growth is a first-class result.
-- Evidence anchors: S09,S11–S19,S27,S33,S36–S41,S45
-- Result status: `NOT RUN`; no number from this protocol is claimed by this audit.
-- Artifact requirement: immutable config, dataset manifest, query text/bytecode, raw samples, traces, server stats, and cost sheet.
-
-### Q036 — query: union child traversal
-
-- Purpose: Verify options and filters propagate into children.
-- Setup: Use identical graph state and semantic result oracle; capture TinkerPop profile, Zipkin spans, AGS metrics, and Aerospike command histograms.
-- Workload: Execute the smallest semantically complete operation for `union child traversal`, then repeat under controlled concurrency and skew.
-- Required counters: client HDR latency, AGS queue/worker/heap/GC, cache hits, record reads, batch keys, sindex records, bytes, result cardinality, cancellations
-- Correctness oracle: Compare exact result bags/order/path identity and durable state against the model oracle; verify after restart when writes occur.
-- Failure interpretation: Any unsupported behavior, timeout, stale value, semantic mismatch, hidden scan, or unbounded resource growth is a first-class result.
-- Evidence anchors: S09,S11–S19,S27,S33,S36–S41,S45
-- Result status: `NOT RUN`; no number from this protocol is claimed by this audit.
-- Artifact requirement: immutable config, dataset manifest, query text/bytecode, raw samples, traces, server stats, and cost sheet.
-
-### Q037 — query: coalesce
-
-- Purpose: Check rewrite coverage and short-circuit reads.
-- Setup: Use identical graph state and semantic result oracle; capture TinkerPop profile, Zipkin spans, AGS metrics, and Aerospike command histograms.
-- Workload: Execute the smallest semantically complete operation for `coalesce`, then repeat under controlled concurrency and skew.
-- Required counters: client HDR latency, AGS queue/worker/heap/GC, cache hits, record reads, batch keys, sindex records, bytes, result cardinality, cancellations
-- Correctness oracle: Compare exact result bags/order/path identity and durable state against the model oracle; verify after restart when writes occur.
-- Failure interpretation: Any unsupported behavior, timeout, stale value, semantic mismatch, hidden scan, or unbounded resource growth is a first-class result.
-- Evidence anchors: S09,S11–S19,S27,S33,S36–S41,S45
-- Result status: `NOT RUN`; no number from this protocol is claimed by this audit.
-- Artifact requirement: immutable config, dataset manifest, query text/bytecode, raw samples, traces, server stats, and cost sheet.
-
-### Q038 — query: optional
-
-- Purpose: Check null/missing branch semantics.
-- Setup: Use identical graph state and semantic result oracle; capture TinkerPop profile, Zipkin spans, AGS metrics, and Aerospike command histograms.
-- Workload: Execute the smallest semantically complete operation for `optional`, then repeat under controlled concurrency and skew.
-- Required counters: client HDR latency, AGS queue/worker/heap/GC, cache hits, record reads, batch keys, sindex records, bytes, result cardinality, cancellations
-- Correctness oracle: Compare exact result bags/order/path identity and durable state against the model oracle; verify after restart when writes occur.
-- Failure interpretation: Any unsupported behavior, timeout, stale value, semantic mismatch, hidden scan, or unbounded resource growth is a first-class result.
-- Evidence anchors: S09,S11–S19,S27,S33,S36–S41,S45
-- Result status: `NOT RUN`; no number from this protocol is claimed by this audit.
-- Artifact requirement: immutable config, dataset manifest, query text/bytecode, raw samples, traces, server stats, and cost sheet.
-
-### Q039 — query: mergeV unique ID
-
-- Purpose: Avoid index ambiguity and count lock/query operations.
-- Setup: Use identical graph state and semantic result oracle; capture TinkerPop profile, Zipkin spans, AGS metrics, and Aerospike command histograms.
-- Workload: Execute the smallest semantically complete operation for `mergeV unique ID`, then repeat under controlled concurrency and skew.
-- Required counters: client HDR latency, AGS queue/worker/heap/GC, cache hits, record reads, batch keys, sindex records, bytes, result cardinality, cancellations
-- Correctness oracle: Compare exact result bags/order/path identity and durable state against the model oracle; verify after restart when writes occur.
-- Failure interpretation: Any unsupported behavior, timeout, stale value, semantic mismatch, hidden scan, or unbounded resource growth is a first-class result.
-- Evidence anchors: S09,S11–S19,S27,S33,S36–S41,S45
-- Result status: `NOT RUN`; no number from this protocol is claimed by this audit.
-- Artifact requirement: immutable config, dataset manifest, query text/bytecode, raw samples, traces, server stats, and cost sheet.
-
-### Q040 — query: mergeV nonunique predicate
-
-- Purpose: Expose multi-match behavior documented by AGS.
-- Setup: Use identical graph state and semantic result oracle; capture TinkerPop profile, Zipkin spans, AGS metrics, and Aerospike command histograms.
-- Workload: Execute the smallest semantically complete operation for `mergeV nonunique predicate`, then repeat under controlled concurrency and skew.
-- Required counters: client HDR latency, AGS queue/worker/heap/GC, cache hits, record reads, batch keys, sindex records, bytes, result cardinality, cancellations
-- Correctness oracle: Compare exact result bags/order/path identity and durable state against the model oracle; verify after restart when writes occur.
-- Failure interpretation: Any unsupported behavior, timeout, stale value, semantic mismatch, hidden scan, or unbounded resource growth is a first-class result.
-- Evidence anchors: S09,S11–S19,S27,S33,S36–S41,S45
-- Result status: `NOT RUN`; no number from this protocol is claimed by this audit.
-- Artifact requirement: immutable config, dataset manifest, query text/bytecode, raw samples, traces, server stats, and cost sheet.
-
-### Q041 — query: mergeE ordinary
-
-- Purpose: Measure lock and adjacency operations.
-- Setup: Use identical graph state and semantic result oracle; capture TinkerPop profile, Zipkin spans, AGS metrics, and Aerospike command histograms.
-- Workload: Execute the smallest semantically complete operation for `mergeE ordinary`, then repeat under controlled concurrency and skew.
-- Required counters: client HDR latency, AGS queue/worker/heap/GC, cache hits, record reads, batch keys, sindex records, bytes, result cardinality, cancellations
-- Correctness oracle: Compare exact result bags/order/path identity and durable state against the model oracle; verify after restart when writes occur.
-- Failure interpretation: Any unsupported behavior, timeout, stale value, semantic mismatch, hidden scan, or unbounded resource growth is a first-class result.
-- Evidence anchors: S09,S11–S19,S27,S33,S36–S41,S45
-- Result status: `NOT RUN`; no number from this protocol is claimed by this audit.
-- Artifact requirement: immutable config, dataset manifest, query text/bytecode, raw samples, traces, server stats, and cost sheet.
-
-### Q042 — query: mergeE supernode
-
-- Purpose: Expose sindex query-thread consumption.
-- Setup: Use identical graph state and semantic result oracle; capture TinkerPop profile, Zipkin spans, AGS metrics, and Aerospike command histograms.
-- Workload: Execute the smallest semantically complete operation for `mergeE supernode`, then repeat under controlled concurrency and skew.
-- Required counters: client HDR latency, AGS queue/worker/heap/GC, cache hits, record reads, batch keys, sindex records, bytes, result cardinality, cancellations
-- Correctness oracle: Compare exact result bags/order/path identity and durable state against the model oracle; verify after restart when writes occur.
-- Failure interpretation: Any unsupported behavior, timeout, stale value, semantic mismatch, hidden scan, or unbounded resource growth is a first-class result.
-- Evidence anchors: S09,S11–S19,S27,S33,S36–S41,S45
-- Result status: `NOT RUN`; no number from this protocol is claimed by this audit.
-- Artifact requirement: immutable config, dataset manifest, query text/bytecode, raw samples, traces, server stats, and cost sheet.
-
-### Q043 — query: drop edge
-
-- Purpose: Verify specialized drop and cleanup.
-- Setup: Use identical graph state and semantic result oracle; capture TinkerPop profile, Zipkin spans, AGS metrics, and Aerospike command histograms.
-- Workload: Execute the smallest semantically complete operation for `drop edge`, then repeat under controlled concurrency and skew.
-- Required counters: client HDR latency, AGS queue/worker/heap/GC, cache hits, record reads, batch keys, sindex records, bytes, result cardinality, cancellations
-- Correctness oracle: Compare exact result bags/order/path identity and durable state against the model oracle; verify after restart when writes occur.
-- Failure interpretation: Any unsupported behavior, timeout, stale value, semantic mismatch, hidden scan, or unbounded resource growth is a first-class result.
-- Evidence anchors: S09,S11–S19,S27,S33,S36–S41,S45
-- Result status: `NOT RUN`; no number from this protocol is claimed by this audit.
-- Artifact requirement: immutable config, dataset manifest, query text/bytecode, raw samples, traces, server stats, and cost sheet.
-
-### Q044 — query: drop ordinary vertex
-
-- Purpose: Count incident-edge work and atomicity mode.
-- Setup: Use identical graph state and semantic result oracle; capture TinkerPop profile, Zipkin spans, AGS metrics, and Aerospike command histograms.
-- Workload: Execute the smallest semantically complete operation for `drop ordinary vertex`, then repeat under controlled concurrency and skew.
-- Required counters: client HDR latency, AGS queue/worker/heap/GC, cache hits, record reads, batch keys, sindex records, bytes, result cardinality, cancellations
-- Correctness oracle: Compare exact result bags/order/path identity and durable state against the model oracle; verify after restart when writes occur.
-- Failure interpretation: Any unsupported behavior, timeout, stale value, semantic mismatch, hidden scan, or unbounded resource growth is a first-class result.
-- Evidence anchors: S09,S11–S19,S27,S33,S36–S41,S45
-- Result status: `NOT RUN`; no number from this protocol is claimed by this audit.
-- Artifact requirement: immutable config, dataset manifest, query text/bytecode, raw samples, traces, server stats, and cost sheet.
-
-### Q045 — query: drop supernode
-
-- Purpose: Record best-effort semantics and completion lag.
-- Setup: Use identical graph state and semantic result oracle; capture TinkerPop profile, Zipkin spans, AGS metrics, and Aerospike command histograms.
-- Workload: Execute the smallest semantically complete operation for `drop supernode`, then repeat under controlled concurrency and skew.
-- Required counters: client HDR latency, AGS queue/worker/heap/GC, cache hits, record reads, batch keys, sindex records, bytes, result cardinality, cancellations
-- Correctness oracle: Compare exact result bags/order/path identity and durable state against the model oracle; verify after restart when writes occur.
-- Failure interpretation: Any unsupported behavior, timeout, stale value, semantic mismatch, hidden scan, or unbounded resource growth is a first-class result.
-- Evidence anchors: S09,S11–S19,S27,S33,S36–S41,S45
-- Result status: `NOT RUN`; no number from this protocol is claimed by this audit.
-- Artifact requirement: immutable config, dataset manifest, query text/bytecode, raw samples, traces, server stats, and cost sheet.
-
-### Q046 — query: scan disabled global
-
-- Purpose: Reject accidental V()/E() without eligible index.
-- Setup: Use identical graph state and semantic result oracle; capture TinkerPop profile, Zipkin spans, AGS metrics, and Aerospike command histograms.
-- Workload: Execute the smallest semantically complete operation for `scan disabled global`, then repeat under controlled concurrency and skew.
-- Required counters: client HDR latency, AGS queue/worker/heap/GC, cache hits, record reads, batch keys, sindex records, bytes, result cardinality, cancellations
-- Correctness oracle: Compare exact result bags/order/path identity and durable state against the model oracle; verify after restart when writes occur.
-- Failure interpretation: Any unsupported behavior, timeout, stale value, semantic mismatch, hidden scan, or unbounded resource growth is a first-class result.
-- Evidence anchors: S09,S11–S19,S27,S33,S36–S41,S45
-- Result status: `NOT RUN`; no number from this protocol is claimed by this audit.
-- Artifact requirement: immutable config, dataset manifest, query text/bytecode, raw samples, traces, server stats, and cost sheet.
-
-### Q047 — query: per-query scan opt-in
-
-- Purpose: Prove explicit escape hatch is auditable.
-- Setup: Use identical graph state and semantic result oracle; capture TinkerPop profile, Zipkin spans, AGS metrics, and Aerospike command histograms.
-- Workload: Execute the smallest semantically complete operation for `per-query scan opt-in`, then repeat under controlled concurrency and skew.
-- Required counters: client HDR latency, AGS queue/worker/heap/GC, cache hits, record reads, batch keys, sindex records, bytes, result cardinality, cancellations
-- Correctness oracle: Compare exact result bags/order/path identity and durable state against the model oracle; verify after restart when writes occur.
-- Failure interpretation: Any unsupported behavior, timeout, stale value, semantic mismatch, hidden scan, or unbounded resource growth is a first-class result.
-- Evidence anchors: S09,S11–S19,S27,S33,S36–S41,S45
-- Result status: `NOT RUN`; no number from this protocol is claimed by this audit.
-- Artifact requirement: immutable config, dataset manifest, query text/bytecode, raw samples, traces, server stats, and cost sheet.
-
-### Q048 — query: page size per node
-
-- Purpose: Measure memory/latency as DB cluster grows.
-- Setup: Use identical graph state and semantic result oracle; capture TinkerPop profile, Zipkin spans, AGS metrics, and Aerospike command histograms.
-- Workload: Execute the smallest semantically complete operation for `page size per node`, then repeat under controlled concurrency and skew.
-- Required counters: client HDR latency, AGS queue/worker/heap/GC, cache hits, record reads, batch keys, sindex records, bytes, result cardinality, cancellations
-- Correctness oracle: Compare exact result bags/order/path identity and durable state against the model oracle; verify after restart when writes occur.
-- Failure interpretation: Any unsupported behavior, timeout, stale value, semantic mismatch, hidden scan, or unbounded resource growth is a first-class result.
-- Evidence anchors: S09,S11–S19,S27,S33,S36–S41,S45
-- Result status: `NOT RUN`; no number from this protocol is claimed by this audit.
-- Artifact requirement: immutable config, dataset manifest, query text/bytecode, raw samples, traces, server stats, and cost sheet.
-
-### Q049 — query: flat page size
-
-- Purpose: Bound cluster-wide response buffering.
-- Setup: Use identical graph state and semantic result oracle; capture TinkerPop profile, Zipkin spans, AGS metrics, and Aerospike command histograms.
-- Workload: Execute the smallest semantically complete operation for `flat page size`, then repeat under controlled concurrency and skew.
-- Required counters: client HDR latency, AGS queue/worker/heap/GC, cache hits, record reads, batch keys, sindex records, bytes, result cardinality, cancellations
-- Correctness oracle: Compare exact result bags/order/path identity and durable state against the model oracle; verify after restart when writes occur.
-- Failure interpretation: Any unsupported behavior, timeout, stale value, semantic mismatch, hidden scan, or unbounded resource growth is a first-class result.
-- Evidence anchors: S09,S11–S19,S27,S33,S36–S41,S45
-- Result status: `NOT RUN`; no number from this protocol is claimed by this audit.
-- Artifact requirement: immutable config, dataset manifest, query text/bytecode, raw samples, traces, server stats, and cost sheet.
-
-### Q050 — query: batch size per node
-
-- Purpose: Measure RPC count and result latency.
-- Setup: Use identical graph state and semantic result oracle; capture TinkerPop profile, Zipkin spans, AGS metrics, and Aerospike command histograms.
-- Workload: Execute the smallest semantically complete operation for `batch size per node`, then repeat under controlled concurrency and skew.
-- Required counters: client HDR latency, AGS queue/worker/heap/GC, cache hits, record reads, batch keys, sindex records, bytes, result cardinality, cancellations
-- Correctness oracle: Compare exact result bags/order/path identity and durable state against the model oracle; verify after restart when writes occur.
-- Failure interpretation: Any unsupported behavior, timeout, stale value, semantic mismatch, hidden scan, or unbounded resource growth is a first-class result.
-- Evidence anchors: S09,S11–S19,S27,S33,S36–S41,S45
-- Result status: `NOT RUN`; no number from this protocol is claimed by this audit.
-- Artifact requirement: immutable config, dataset manifest, query text/bytecode, raw samples, traces, server stats, and cost sheet.
-
-### Q051 — query: flat batch size
-
-- Purpose: Hold total batch constant across node count.
-- Setup: Use identical graph state and semantic result oracle; capture TinkerPop profile, Zipkin spans, AGS metrics, and Aerospike command histograms.
-- Workload: Execute the smallest semantically complete operation for `flat batch size`, then repeat under controlled concurrency and skew.
-- Required counters: client HDR latency, AGS queue/worker/heap/GC, cache hits, record reads, batch keys, sindex records, bytes, result cardinality, cancellations
-- Correctness oracle: Compare exact result bags/order/path identity and durable state against the model oracle; verify after restart when writes occur.
-- Failure interpretation: Any unsupported behavior, timeout, stale value, semantic mismatch, hidden scan, or unbounded resource growth is a first-class result.
-- Evidence anchors: S09,S11–S19,S27,S33,S36–S41,S45
-- Result status: `NOT RUN`; no number from this protocol is claimed by this audit.
-- Artifact requirement: immutable config, dataset manifest, query text/bytecode, raw samples, traces, server stats, and cost sheet.
-
-### Q052 — query: parallelize 1
-
-- Purpose: Establish default-equivalent baseline.
-- Setup: Use identical graph state and semantic result oracle; capture TinkerPop profile, Zipkin spans, AGS metrics, and Aerospike command histograms.
-- Workload: Execute the smallest semantically complete operation for `parallelize 1`, then repeat under controlled concurrency and skew.
-- Required counters: client HDR latency, AGS queue/worker/heap/GC, cache hits, record reads, batch keys, sindex records, bytes, result cardinality, cancellations
-- Correctness oracle: Compare exact result bags/order/path identity and durable state against the model oracle; verify after restart when writes occur.
-- Failure interpretation: Any unsupported behavior, timeout, stale value, semantic mismatch, hidden scan, or unbounded resource growth is a first-class result.
-- Evidence anchors: S09,S11–S19,S27,S33,S36–S41,S45
-- Result status: `NOT RUN`; no number from this protocol is claimed by this audit.
-- Artifact requirement: immutable config, dataset manifest, query text/bytecode, raw samples, traces, server stats, and cost sheet.
-
-### Q053 — query: parallelize 2
-
-- Purpose: Measure single-query gain and fleet interference.
-- Setup: Use identical graph state and semantic result oracle; capture TinkerPop profile, Zipkin spans, AGS metrics, and Aerospike command histograms.
-- Workload: Execute the smallest semantically complete operation for `parallelize 2`, then repeat under controlled concurrency and skew.
-- Required counters: client HDR latency, AGS queue/worker/heap/GC, cache hits, record reads, batch keys, sindex records, bytes, result cardinality, cancellations
-- Correctness oracle: Compare exact result bags/order/path identity and durable state against the model oracle; verify after restart when writes occur.
-- Failure interpretation: Any unsupported behavior, timeout, stale value, semantic mismatch, hidden scan, or unbounded resource growth is a first-class result.
-- Evidence anchors: S09,S11–S19,S27,S33,S36–S41,S45
-- Result status: `NOT RUN`; no number from this protocol is claimed by this audit.
-- Artifact requirement: immutable config, dataset manifest, query text/bytecode, raw samples, traces, server stats, and cost sheet.
-
-### Q054 — query: parallelize CPU count
-
-- Purpose: Expose executor saturation and tail risk.
-- Setup: Use identical graph state and semantic result oracle; capture TinkerPop profile, Zipkin spans, AGS metrics, and Aerospike command histograms.
-- Workload: Execute the smallest semantically complete operation for `parallelize CPU count`, then repeat under controlled concurrency and skew.
-- Required counters: client HDR latency, AGS queue/worker/heap/GC, cache hits, record reads, batch keys, sindex records, bytes, result cardinality, cancellations
-- Correctness oracle: Compare exact result bags/order/path identity and durable state against the model oracle; verify after restart when writes occur.
-- Failure interpretation: Any unsupported behavior, timeout, stale value, semantic mismatch, hidden scan, or unbounded resource growth is a first-class result.
-- Evidence anchors: S09,S11–S19,S27,S33,S36–S41,S45
-- Result status: `NOT RUN`; no number from this protocol is claimed by this audit.
-- Artifact requirement: immutable config, dataset manifest, query text/bytecode, raw samples, traces, server stats, and cost sheet.
-
-### Q055 — query: parallelize in transaction
-
-- Purpose: Verify explicit rejection.
-- Setup: Use identical graph state and semantic result oracle; capture TinkerPop profile, Zipkin spans, AGS metrics, and Aerospike command histograms.
-- Workload: Execute the smallest semantically complete operation for `parallelize in transaction`, then repeat under controlled concurrency and skew.
-- Required counters: client HDR latency, AGS queue/worker/heap/GC, cache hits, record reads, batch keys, sindex records, bytes, result cardinality, cancellations
-- Correctness oracle: Compare exact result bags/order/path identity and durable state against the model oracle; verify after restart when writes occur.
-- Failure interpretation: Any unsupported behavior, timeout, stale value, semantic mismatch, hidden scan, or unbounded resource growth is a first-class result.
-- Evidence anchors: S09,S11–S19,S27,S33,S36–S41,S45
-- Result status: `NOT RUN`; no number from this protocol is claimed by this audit.
-- Artifact requirement: immutable config, dataset manifest, query text/bytecode, raw samples, traces, server stats, and cost sheet.
-
-### Q056 — query: transactional cache cold
-
-- Purpose: Establish per-request backend I/O.
-- Setup: Use identical graph state and semantic result oracle; capture TinkerPop profile, Zipkin spans, AGS metrics, and Aerospike command histograms.
-- Workload: Execute the smallest semantically complete operation for `transactional cache cold`, then repeat under controlled concurrency and skew.
-- Required counters: client HDR latency, AGS queue/worker/heap/GC, cache hits, record reads, batch keys, sindex records, bytes, result cardinality, cancellations
-- Correctness oracle: Compare exact result bags/order/path identity and durable state against the model oracle; verify after restart when writes occur.
-- Failure interpretation: Any unsupported behavior, timeout, stale value, semantic mismatch, hidden scan, or unbounded resource growth is a first-class result.
-- Evidence anchors: S09,S11–S19,S27,S33,S36–S41,S45
-- Result status: `NOT RUN`; no number from this protocol is claimed by this audit.
-- Artifact requirement: immutable config, dataset manifest, query text/bytecode, raw samples, traces, server stats, and cost sheet.
-
-### Q057 — query: transactional cache repeated vertex
-
-- Purpose: Observe within-traversal hit only.
-- Setup: Use identical graph state and semantic result oracle; capture TinkerPop profile, Zipkin spans, AGS metrics, and Aerospike command histograms.
-- Workload: Execute the smallest semantically complete operation for `transactional cache repeated vertex`, then repeat under controlled concurrency and skew.
-- Required counters: client HDR latency, AGS queue/worker/heap/GC, cache hits, record reads, batch keys, sindex records, bytes, result cardinality, cancellations
-- Correctness oracle: Compare exact result bags/order/path identity and durable state against the model oracle; verify after restart when writes occur.
-- Failure interpretation: Any unsupported behavior, timeout, stale value, semantic mismatch, hidden scan, or unbounded resource growth is a first-class result.
-- Evidence anchors: S09,S11–S19,S27,S33,S36–S41,S45
-- Result status: `NOT RUN`; no number from this protocol is claimed by this audit.
-- Artifact requirement: immutable config, dataset manifest, query text/bytecode, raw samples, traces, server stats, and cost sheet.
-
-### Q058 — query: global cache warm
-
-- Purpose: Measure best-case repeated hot-set reads.
-- Setup: Use identical graph state and semantic result oracle; capture TinkerPop profile, Zipkin spans, AGS metrics, and Aerospike command histograms.
-- Workload: Execute the smallest semantically complete operation for `global cache warm`, then repeat under controlled concurrency and skew.
-- Required counters: client HDR latency, AGS queue/worker/heap/GC, cache hits, record reads, batch keys, sindex records, bytes, result cardinality, cancellations
-- Correctness oracle: Compare exact result bags/order/path identity and durable state against the model oracle; verify after restart when writes occur.
-- Failure interpretation: Any unsupported behavior, timeout, stale value, semantic mismatch, hidden scan, or unbounded resource growth is a first-class result.
-- Evidence anchors: S09,S11–S19,S27,S33,S36–S41,S45
-- Result status: `NOT RUN`; no number from this protocol is claimed by this audit.
-- Artifact requirement: immutable config, dataset manifest, query text/bytecode, raw samples, traces, server stats, and cost sheet.
-
-### Q059 — query: global cache stale local write
-
-- Purpose: Demonstrate documented correctness risk.
-- Setup: Use identical graph state and semantic result oracle; capture TinkerPop profile, Zipkin spans, AGS metrics, and Aerospike command histograms.
-- Workload: Execute the smallest semantically complete operation for `global cache stale local write`, then repeat under controlled concurrency and skew.
-- Required counters: client HDR latency, AGS queue/worker/heap/GC, cache hits, record reads, batch keys, sindex records, bytes, result cardinality, cancellations
-- Correctness oracle: Compare exact result bags/order/path identity and durable state against the model oracle; verify after restart when writes occur.
-- Failure interpretation: Any unsupported behavior, timeout, stale value, semantic mismatch, hidden scan, or unbounded resource growth is a first-class result.
-- Evidence anchors: S09,S11–S19,S27,S33,S36–S41,S45
-- Result status: `NOT RUN`; no number from this protocol is claimed by this audit.
-- Artifact requirement: immutable config, dataset manifest, query text/bytecode, raw samples, traces, server stats, and cost sheet.
-
-### Q060 — query: global cache stale other AGS
-
-- Purpose: Demonstrate fleet incoherence.
-- Setup: Use identical graph state and semantic result oracle; capture TinkerPop profile, Zipkin spans, AGS metrics, and Aerospike command histograms.
-- Workload: Execute the smallest semantically complete operation for `global cache stale other AGS`, then repeat under controlled concurrency and skew.
-- Required counters: client HDR latency, AGS queue/worker/heap/GC, cache hits, record reads, batch keys, sindex records, bytes, result cardinality, cancellations
-- Correctness oracle: Compare exact result bags/order/path identity and durable state against the model oracle; verify after restart when writes occur.
-- Failure interpretation: Any unsupported behavior, timeout, stale value, semantic mismatch, hidden scan, or unbounded resource growth is a first-class result.
-- Evidence anchors: S09,S11–S19,S27,S33,S36–S41,S45
-- Result status: `NOT RUN`; no number from this protocol is claimed by this audit.
-- Artifact requirement: immutable config, dataset manifest, query text/bytecode, raw samples, traces, server stats, and cost sheet.
-
-### Q061 — query: global cache reset
-
-- Purpose: Measure invalidation latency and traffic surge.
-- Setup: Use identical graph state and semantic result oracle; capture TinkerPop profile, Zipkin spans, AGS metrics, and Aerospike command histograms.
-- Workload: Execute the smallest semantically complete operation for `global cache reset`, then repeat under controlled concurrency and skew.
-- Required counters: client HDR latency, AGS queue/worker/heap/GC, cache hits, record reads, batch keys, sindex records, bytes, result cardinality, cancellations
-- Correctness oracle: Compare exact result bags/order/path identity and durable state against the model oracle; verify after restart when writes occur.
-- Failure interpretation: Any unsupported behavior, timeout, stale value, semantic mismatch, hidden scan, or unbounded resource growth is a first-class result.
-- Evidence anchors: S09,S11–S19,S27,S33,S36–S41,S45
-- Result status: `NOT RUN`; no number from this protocol is claimed by this audit.
-- Artifact requirement: immutable config, dataset manifest, query text/bytecode, raw samples, traces, server stats, and cost sheet.
-
-### Q062 — query: query trace threshold
-
-- Purpose: Correlate spans with backend calls without full-sampling overhead.
-- Setup: Use identical graph state and semantic result oracle; capture TinkerPop profile, Zipkin spans, AGS metrics, and Aerospike command histograms.
-- Workload: Execute the smallest semantically complete operation for `query trace threshold`, then repeat under controlled concurrency and skew.
-- Required counters: client HDR latency, AGS queue/worker/heap/GC, cache hits, record reads, batch keys, sindex records, bytes, result cardinality, cancellations
-- Correctness oracle: Compare exact result bags/order/path identity and durable state against the model oracle; verify after restart when writes occur.
-- Failure interpretation: Any unsupported behavior, timeout, stale value, semantic mismatch, hidden scan, or unbounded resource growth is a first-class result.
-- Evidence anchors: S09,S11–S19,S27,S33,S36–S41,S45
-- Result status: `NOT RUN`; no number from this protocol is claimed by this audit.
-- Artifact requirement: immutable config, dataset manifest, query text/bytecode, raw samples, traces, server stats, and cost sheet.
-
-### Q063 — query: query profile
-
-- Purpose: Capture rewritten step plan and per-step timing.
-- Setup: Use identical graph state and semantic result oracle; capture TinkerPop profile, Zipkin spans, AGS metrics, and Aerospike command histograms.
-- Workload: Execute the smallest semantically complete operation for `query profile`, then repeat under controlled concurrency and skew.
-- Required counters: client HDR latency, AGS queue/worker/heap/GC, cache hits, record reads, batch keys, sindex records, bytes, result cardinality, cancellations
-- Correctness oracle: Compare exact result bags/order/path identity and durable state against the model oracle; verify after restart when writes occur.
-- Failure interpretation: Any unsupported behavior, timeout, stale value, semantic mismatch, hidden scan, or unbounded resource growth is a first-class result.
-- Evidence anchors: S09,S11–S19,S27,S33,S36–S41,S45
-- Result status: `NOT RUN`; no number from this protocol is claimed by this audit.
-- Artifact requirement: immutable config, dataset manifest, query text/bytecode, raw samples, traces, server stats, and cost sheet.
-
-### Q064 — query: timeout cancellation
-
-- Purpose: Verify work stops in AGS and Database after client timeout.
-- Setup: Use identical graph state and semantic result oracle; capture TinkerPop profile, Zipkin spans, AGS metrics, and Aerospike command histograms.
-- Workload: Execute the smallest semantically complete operation for `timeout cancellation`, then repeat under controlled concurrency and skew.
-- Required counters: client HDR latency, AGS queue/worker/heap/GC, cache hits, record reads, batch keys, sindex records, bytes, result cardinality, cancellations
-- Correctness oracle: Compare exact result bags/order/path identity and durable state against the model oracle; verify after restart when writes occur.
-- Failure interpretation: Any unsupported behavior, timeout, stale value, semantic mismatch, hidden scan, or unbounded resource growth is a first-class result.
-- Evidence anchors: S09,S11–S19,S27,S33,S36–S41,S45
-- Result status: `NOT RUN`; no number from this protocol is claimed by this audit.
-- Artifact requirement: immutable config, dataset manifest, query text/bytecode, raw samples, traces, server stats, and cost sheet.
-
-### Q065 — query: client disconnect
-
-- Purpose: Verify iterator/query resources are reclaimed.
-- Setup: Use identical graph state and semantic result oracle; capture TinkerPop profile, Zipkin spans, AGS metrics, and Aerospike command histograms.
-- Workload: Execute the smallest semantically complete operation for `client disconnect`, then repeat under controlled concurrency and skew.
-- Required counters: client HDR latency, AGS queue/worker/heap/GC, cache hits, record reads, batch keys, sindex records, bytes, result cardinality, cancellations
-- Correctness oracle: Compare exact result bags/order/path identity and durable state against the model oracle; verify after restart when writes occur.
-- Failure interpretation: Any unsupported behavior, timeout, stale value, semantic mismatch, hidden scan, or unbounded resource growth is a first-class result.
-- Evidence anchors: S09,S11–S19,S27,S33,S36–S41,S45
-- Result status: `NOT RUN`; no number from this protocol is claimed by this audit.
-- Artifact requirement: immutable config, dataset manifest, query text/bytecode, raw samples, traces, server stats, and cost sheet.
-
-### Q066 — query: backpressure slow client
-
-- Purpose: Bound result buffering and heap.
-- Setup: Use identical graph state and semantic result oracle; capture TinkerPop profile, Zipkin spans, AGS metrics, and Aerospike command histograms.
-- Workload: Execute the smallest semantically complete operation for `backpressure slow client`, then repeat under controlled concurrency and skew.
-- Required counters: client HDR latency, AGS queue/worker/heap/GC, cache hits, record reads, batch keys, sindex records, bytes, result cardinality, cancellations
-- Correctness oracle: Compare exact result bags/order/path identity and durable state against the model oracle; verify after restart when writes occur.
-- Failure interpretation: Any unsupported behavior, timeout, stale value, semantic mismatch, hidden scan, or unbounded resource growth is a first-class result.
-- Evidence anchors: S09,S11–S19,S27,S33,S36–S41,S45
-- Result status: `NOT RUN`; no number from this protocol is claimed by this audit.
-- Artifact requirement: immutable config, dataset manifest, query text/bytecode, raw samples, traces, server stats, and cost sheet.
-
-### Q067 — query: mixed short and scan
-
-- Purpose: Verify scan admission does not destroy short-query tail.
-- Setup: Use identical graph state and semantic result oracle; capture TinkerPop profile, Zipkin spans, AGS metrics, and Aerospike command histograms.
-- Workload: Execute the smallest semantically complete operation for `mixed short and scan`, then repeat under controlled concurrency and skew.
-- Required counters: client HDR latency, AGS queue/worker/heap/GC, cache hits, record reads, batch keys, sindex records, bytes, result cardinality, cancellations
-- Correctness oracle: Compare exact result bags/order/path identity and durable state against the model oracle; verify after restart when writes occur.
-- Failure interpretation: Any unsupported behavior, timeout, stale value, semantic mismatch, hidden scan, or unbounded resource growth is a first-class result.
-- Evidence anchors: S09,S11–S19,S27,S33,S36–S41,S45
-- Result status: `NOT RUN`; no number from this protocol is claimed by this audit.
-- Artifact requirement: immutable config, dataset manifest, query text/bytecode, raw samples, traces, server stats, and cost sheet.
-
-### Q068 — query: mixed short and supernode
-
-- Purpose: Verify heavy traversal isolation.
-- Setup: Use identical graph state and semantic result oracle; capture TinkerPop profile, Zipkin spans, AGS metrics, and Aerospike command histograms.
-- Workload: Execute the smallest semantically complete operation for `mixed short and supernode`, then repeat under controlled concurrency and skew.
-- Required counters: client HDR latency, AGS queue/worker/heap/GC, cache hits, record reads, batch keys, sindex records, bytes, result cardinality, cancellations
-- Correctness oracle: Compare exact result bags/order/path identity and durable state against the model oracle; verify after restart when writes occur.
-- Failure interpretation: Any unsupported behavior, timeout, stale value, semantic mismatch, hidden scan, or unbounded resource growth is a first-class result.
-- Evidence anchors: S09,S11–S19,S27,S33,S36–S41,S45
-- Result status: `NOT RUN`; no number from this protocol is claimed by this audit.
-- Artifact requirement: immutable config, dataset manifest, query text/bytecode, raw samples, traces, server stats, and cost sheet.
-
-### Q069 — query: 32 AGS scale
-
-- Purpose: Locate storage saturation and load-balancer skew.
-- Setup: Use identical graph state and semantic result oracle; capture TinkerPop profile, Zipkin spans, AGS metrics, and Aerospike command histograms.
-- Workload: Execute the smallest semantically complete operation for `32 AGS scale`, then repeat under controlled concurrency and skew.
-- Required counters: client HDR latency, AGS queue/worker/heap/GC, cache hits, record reads, batch keys, sindex records, bytes, result cardinality, cancellations
-- Correctness oracle: Compare exact result bags/order/path identity and durable state against the model oracle; verify after restart when writes occur.
-- Failure interpretation: Any unsupported behavior, timeout, stale value, semantic mismatch, hidden scan, or unbounded resource growth is a first-class result.
-- Evidence anchors: S09,S11–S19,S27,S33,S36–S41,S45
-- Result status: `NOT RUN`; no number from this protocol is claimed by this audit.
-- Artifact requirement: immutable config, dataset manifest, query text/bytecode, raw samples, traces, server stats, and cost sheet.
+Every query case uses the same graph snapshot and an independent result oracle. The run captures submitted bytecode, provider-optimized traversal, TinkerPop profile, Zipkin spans, AGS queue and cache metrics, Database command histograms, bytes read, result cardinality, and cancellation behavior. Point, index, supernode, and scan cases run in separate traffic classes so one path does not hide another.
+
+Cold, request-cache, global-cache, steady-state, saturation, and slow-consumer phases are named explicitly. Errors, retries, timeouts, and partial streams stay in the sample set. A semantic mismatch or an unexpected scan fails the case even when its latency is low. A provider rewrite is credited only when the saved optimized traversal and backend counters demonstrate that it fired.
+
+### Q001 : query: V(id)
+
+**Purpose.** Prove one point-root path and stable ID semantics.
+
+**Evidence anchors.** S09,S11–S19,S27,S33,S36–S41,S45
+
+
+### Q002 : query: V(id1,id2,...)
+
+**Purpose.** Observe batch partitioning by database node.
+
+**Evidence anchors.** S09,S11–S19,S27,S33,S36–S41,S45
+
+
+### Q003 : query: V().hasLabel indexed
+
+**Purpose.** Verify secondary index rather than scan.
+
+**Evidence anchors.** S09,S11–S19,S27,S33,S36–S41,S45
+
+
+### Q004 : query: V().hasLabel unindexed
+
+**Purpose.** Expose scan and scan-disable behavior.
+
+**Evidence anchors.** S09,S11–S19,S27,S33,S36–S41,S45
+
+
+### Q005 : query: V().has string equality
+
+**Purpose.** Use compatible string index.
+
+**Evidence anchors.** S09,S11–S19,S27,S33,S36–S41,S45
+
+
+### Q006 : query: V().has numeric equality
+
+**Purpose.** Use compatible numeric index.
+
+**Evidence anchors.** S09,S11–S19,S27,S33,S36–S41,S45
+
+
+### Q007 : query: V().has numeric range
+
+**Purpose.** Inspect range filter and remaining predicates.
+
+**Evidence anchors.** S09,S11–S19,S27,S33,S36–S41,S45
+
+
+### Q008 : query: V().has Double
+
+**Purpose.** Expose unindexed fallback.
+
+**Evidence anchors.** S09,S11–S19,S27,S33,S36–S41,S45
+
+
+### Q009 : query: V().has substring
+
+**Purpose.** Expose full scan and filter cost.
+
+**Evidence anchors.** S09,S11–S19,S27,S33,S36–S41,S45
+
+
+### Q010 : query: compound equality
+
+**Purpose.** Observe expression-index selection.
+
+**Evidence anchors.** S09,S11–S19,S27,S33,S36–S41,S45
+
+
+### Q011 : query: two eligible indexes
+
+**Purpose.** Verify cardinality-based most-selective root.
+
+**Evidence anchors.** S09,S11–S19,S27,S33,S36–S41,S45
+
+
+### Q012 : query: stale cardinality metadata
+
+**Purpose.** Measure plan lag after data distribution changes.
+
+**Evidence anchors.** S09,S11–S19,S27,S33,S36–S41,S45
+
+
+### Q013 : query: outE label
+
+**Purpose.** Count vertex and packed-edge reads.
+
+**Evidence anchors.** S09,S11–S19,S27,S33,S36–S41,S45
+
+
+### Q014 : query: out adjacent vertices
+
+**Purpose.** Verify edge-skipping/batch rewrite.
+
+**Evidence anchors.** S09,S11–S19,S27,S33,S36–S41,S45
+
+
+### Q015 : query: in adjacent vertices
+
+**Purpose.** Verify reverse ordinary adjacency path.
+
+**Evidence anchors.** S09,S11–S19,S27,S33,S36–S41,S45
+
+
+### Q016 : query: both self-loop
+
+**Purpose.** Verify multiplicity and dedup semantics.
+
+**Evidence anchors.** S09,S11–S19,S27,S33,S36–S41,S45
+
+
+### Q017 : query: otherV
+
+**Purpose.** Verify batched adjacent endpoint reads.
+
+**Evidence anchors.** S09,S11–S19,S27,S33,S36–S41,S45
+
+
+### Q018 : query: edge-to-vertex
+
+**Purpose.** Verify specialized batch step.
+
+**Evidence anchors.** S09,S11–S19,S27,S33,S36–S41,S45
+
+
+### Q019 : query: has after VertexStep
+
+**Purpose.** Verify predicate folding/pushdown.
+
+**Evidence anchors.** S09,S11–S19,S27,S33,S36–S41,S45
+
+
+### Q020 : query: limit after VertexStep
+
+**Purpose.** Verify early termination and reduced I/O.
+
+**Evidence anchors.** S09,S11–S19,S27,S33,S36–S41,S45
+
+
+### Q021 : query: sample after VertexStep
+
+**Purpose.** Verify sample semantics without reading all candidates.
+
+**Evidence anchors.** S09,S11–S19,S27,S33,S36–S41,S45
+
+
+### Q022 : query: local edge count
+
+**Purpose.** Verify adjacency-local count without edge fetch.
+
+**Evidence anchors.** S09,S11–S19,S27,S33,S36–S41,S45
+
+
+### Q023 : query: global vertex count
+
+**Purpose.** Verify count optimization and exactness during mutation.
+
+**Evidence anchors.** S09,S11–S19,S27,S33,S36–S41,S45
+
+
+### Q024 : query: global edge count
+
+**Purpose.** Verify summary/scan path and exactness.
+
+**Evidence anchors.** S09,S11–S19,S27,S33,S36–S41,S45
+
+
+### Q025 : query: properties projection
+
+**Purpose.** Fetch only required map entries.
+
+**Evidence anchors.** S09,S11–S19,S27,S33,S36–S41,S45
+
+
+### Q026 : query: valueMap
+
+**Purpose.** Measure requested versus materialized properties.
+
+**Evidence anchors.** S09,S11–S19,S27,S33,S36–S41,S45
+
+
+### Q027 : query: elementMap
+
+**Purpose.** Inspect provider-specific projection rewrite.
+
+**Evidence anchors.** S09,S11–S19,S27,S33,S36–S41,S45
+
+
+### Q028 : query: path
+
+**Purpose.** Charge path object retention and edge/vertex materialization.
+
+**Evidence anchors.** S09,S11–S19,S27,S33,S36–S41,S45
+
+
+### Q029 : query: simplePath
+
+**Purpose.** Charge visited-set memory and compare semantics.
+
+**Evidence anchors.** S09,S11–S19,S27,S33,S36–S41,S45
+
+
+### Q030 : query: dedup
+
+**Purpose.** Measure hash state and spill/limit behavior.
+
+**Evidence anchors.** S09,S11–S19,S27,S33,S36–S41,S45
+
+
+### Q031 : query: order
+
+**Purpose.** Expose full materialization and memory.
+
+**Evidence anchors.** S09,S11–S19,S27,S33,S36–S41,S45
+
+
+### Q032 : query: groupCount
+
+**Purpose.** Classify as OLTP traversal or move to OLAP path.
+
+**Evidence anchors.** S09,S11–S19,S27,S33,S36–S41,S45
+
+
+### Q033 : query: repeat depth 2
+
+**Purpose.** Measure batched frontier behavior.
+
+**Evidence anchors.** S09,S11–S19,S27,S33,S36–S41,S45
+
+
+### Q034 : query: repeat depth 4
+
+**Purpose.** Expose multiplicative frontier and request limits.
+
+**Evidence anchors.** S09,S11–S19,S27,S33,S36–S41,S45
+
+
+### Q035 : query: repeat emit
+
+**Purpose.** Verify 3.2.1 optimization and output semantics.
+
+**Evidence anchors.** S09,S11–S19,S27,S33,S36–S41,S45
+
+
+### Q036 : query: union child traversal
+
+**Purpose.** Verify options and filters propagate into children.
+
+**Evidence anchors.** S09,S11–S19,S27,S33,S36–S41,S45
+
+
+### Q037 : query: coalesce
+
+**Purpose.** Check rewrite coverage and short-circuit reads.
+
+**Evidence anchors.** S09,S11–S19,S27,S33,S36–S41,S45
+
+
+### Q038 : query: optional
+
+**Purpose.** Check null/missing branch semantics.
+
+**Evidence anchors.** S09,S11–S19,S27,S33,S36–S41,S45
+
+
+### Q039 : query: mergeV unique ID
+
+**Purpose.** Avoid index ambiguity and count lock/query operations.
+
+**Evidence anchors.** S09,S11–S19,S27,S33,S36–S41,S45
+
+
+### Q040 : query: mergeV nonunique predicate
+
+**Purpose.** Expose multi-match behavior documented by AGS.
+
+**Evidence anchors.** S09,S11–S19,S27,S33,S36–S41,S45
+
+
+### Q041 : query: mergeE ordinary
+
+**Purpose.** Measure lock and adjacency operations.
+
+**Evidence anchors.** S09,S11–S19,S27,S33,S36–S41,S45
+
+
+### Q042 : query: mergeE supernode
+
+**Purpose.** Expose sindex query-thread consumption.
+
+**Evidence anchors.** S09,S11–S19,S27,S33,S36–S41,S45
+
+
+### Q043 : query: drop edge
+
+**Purpose.** Verify specialized drop and cleanup.
+
+**Evidence anchors.** S09,S11–S19,S27,S33,S36–S41,S45
+
+
+### Q044 : query: drop ordinary vertex
+
+**Purpose.** Count incident-edge work and atomicity mode.
+
+**Evidence anchors.** S09,S11–S19,S27,S33,S36–S41,S45
+
+
+### Q045 : query: drop supernode
+
+**Purpose.** Record best-effort semantics and completion lag.
+
+**Evidence anchors.** S09,S11–S19,S27,S33,S36–S41,S45
+
+
+### Q046 : query: scan disabled global
+
+**Purpose.** Reject accidental V()/E() without eligible index.
+
+**Evidence anchors.** S09,S11–S19,S27,S33,S36–S41,S45
+
+
+### Q047 : query: per-query scan opt-in
+
+**Purpose.** Prove explicit escape hatch is auditable.
+
+**Evidence anchors.** S09,S11–S19,S27,S33,S36–S41,S45
+
+
+### Q048 : query: page size per node
+
+**Purpose.** Measure memory/latency as DB cluster grows.
+
+**Evidence anchors.** S09,S11–S19,S27,S33,S36–S41,S45
+
+
+### Q049 : query: flat page size
+
+**Purpose.** Bound cluster-wide response buffering.
+
+**Evidence anchors.** S09,S11–S19,S27,S33,S36–S41,S45
+
+
+### Q050 : query: batch size per node
+
+**Purpose.** Measure RPC count and result latency.
+
+**Evidence anchors.** S09,S11–S19,S27,S33,S36–S41,S45
+
+
+### Q051 : query: flat batch size
+
+**Purpose.** Hold total batch constant across node count.
+
+**Evidence anchors.** S09,S11–S19,S27,S33,S36–S41,S45
+
+
+### Q052 : query: parallelize 1
+
+**Purpose.** Establish default-equivalent baseline.
+
+**Evidence anchors.** S09,S11–S19,S27,S33,S36–S41,S45
+
+
+### Q053 : query: parallelize 2
+
+**Purpose.** Measure single-query gain and fleet interference.
+
+**Evidence anchors.** S09,S11–S19,S27,S33,S36–S41,S45
+
+
+### Q054 : query: parallelize CPU count
+
+**Purpose.** Expose executor saturation and tail risk.
+
+**Evidence anchors.** S09,S11–S19,S27,S33,S36–S41,S45
+
+
+### Q055 : query: parallelize in transaction
+
+**Purpose.** Verify explicit rejection.
+
+**Evidence anchors.** S09,S11–S19,S27,S33,S36–S41,S45
+
+
+### Q056 : query: transactional cache cold
+
+**Purpose.** Establish per-request backend I/O.
+
+**Evidence anchors.** S09,S11–S19,S27,S33,S36–S41,S45
+
+
+### Q057 : query: transactional cache repeated vertex
+
+**Purpose.** Observe within-traversal hit only.
+
+**Evidence anchors.** S09,S11–S19,S27,S33,S36–S41,S45
+
+
+### Q058 : query: global cache warm
+
+**Purpose.** Measure best-case repeated hot-set reads.
+
+**Evidence anchors.** S09,S11–S19,S27,S33,S36–S41,S45
+
+
+### Q059 : query: global cache stale local write
+
+**Purpose.** Demonstrate documented correctness risk.
+
+**Evidence anchors.** S09,S11–S19,S27,S33,S36–S41,S45
+
+
+### Q060 : query: global cache stale other AGS
+
+**Purpose.** Demonstrate fleet incoherence.
+
+**Evidence anchors.** S09,S11–S19,S27,S33,S36–S41,S45
+
+
+### Q061 : query: global cache reset
+
+**Purpose.** Measure invalidation latency and traffic surge.
+
+**Evidence anchors.** S09,S11–S19,S27,S33,S36–S41,S45
+
+
+### Q062 : query: query trace threshold
+
+**Purpose.** Correlate spans with backend calls without full-sampling overhead.
+
+**Evidence anchors.** S09,S11–S19,S27,S33,S36–S41,S45
+
+
+### Q063 : query: query profile
+
+**Purpose.** Capture rewritten step plan and per-step timing.
+
+**Evidence anchors.** S09,S11–S19,S27,S33,S36–S41,S45
+
+
+### Q064 : query: timeout cancellation
+
+**Purpose.** Verify work stops in AGS and Database after client timeout.
+
+**Evidence anchors.** S09,S11–S19,S27,S33,S36–S41,S45
+
+
+### Q065 : query: client disconnect
+
+**Purpose.** Verify iterator/query resources are reclaimed.
+
+**Evidence anchors.** S09,S11–S19,S27,S33,S36–S41,S45
+
+
+### Q066 : query: backpressure slow client
+
+**Purpose.** Bound result buffering and heap.
+
+**Evidence anchors.** S09,S11–S19,S27,S33,S36–S41,S45
+
+
+### Q067 : query: mixed short and scan
+
+**Purpose.** Verify scan admission does not destroy short-query tail.
+
+**Evidence anchors.** S09,S11–S19,S27,S33,S36–S41,S45
+
+
+### Q068 : query: mixed short and supernode
+
+**Purpose.** Verify heavy traversal isolation.
+
+**Evidence anchors.** S09,S11–S19,S27,S33,S36–S41,S45
+
+
+### Q069 : query: 32 AGS scale
+
+**Purpose.** Locate storage saturation and load-balancer skew.
+
+**Evidence anchors.** S09,S11–S19,S27,S33,S36–S41,S45
+
 
 ## Source register
 
 The retrieval date for web sources is the research cut. Git sources are pinned by commit. A source being official establishes what was stated or implemented; it does not independently establish a performance claim.
 
-### S09 — Architecture
+### S09 : Architecture
 
-- Type: Official documentation
-- Audit note: Three-layer request path
-- URL: https://aerospike.com/docs/graph/overview/architecture/
+**Type.** Official documentation
 
-### S11 — Indexing
+**Audit note.** Three-layer request path
 
-- Type: Official documentation
-- Audit note: Vertex index and scan controls
-- URL: https://aerospike.com/docs/graph/develop/query/indexing/
+**URL.** https://aerospike.com/docs/graph/overview/architecture/
 
-### S12 — Supernodes
 
-- Type: Official documentation
-- Audit note: Thresholds and filtered traversal guidance
-- URL: https://aerospike.com/docs/graph/develop/query/supernodes/
+### S11 : Indexing
 
-### S13 — Query threading
+**Type.** Official documentation
 
-- Type: Official documentation
-- Audit note: Per-query parallelization and batch/page controls
-- URL: https://aerospike.com/docs/graph/develop/query/query-threading/
+**Audit note.** Vertex index and scan controls
 
-### S14 — Cache management
+**URL.** https://aerospike.com/docs/graph/develop/query/indexing/
 
-- Type: Official documentation
-- Audit note: Transactional and global record caches
-- URL: https://aerospike.com/docs/graph/manage/cache/
 
-### S15 — Data types
+### S12 : Supernodes
 
-- Type: Official documentation
-- Audit note: Property and index type limitations
-- URL: https://aerospike.com/docs/graph/develop/query/data-type-support/
+**Type.** Official documentation
 
-### S16 — TinkerPop feature support
+**Audit note.** Thresholds and filtered traversal guidance
 
-- Type: Official documentation
-- Audit note: Feature compatibility matrix
-- URL: https://aerospike.com/docs/graph/overview/tinkerpop/
+**URL.** https://aerospike.com/docs/graph/develop/query/supernodes/
 
-### S17 — Configuration reference
 
-- Type: Official documentation
-- Audit note: AGS runtime knobs
-- URL: https://aerospike.com/docs/graph/reference/config/
+### S13 : Query threading
 
-### S18 — Metrics reference
+**Type.** Official documentation
 
-- Type: Official documentation
-- Audit note: Prometheus metric inventory
-- URL: https://aerospike.com/docs/graph/reference/metrics/
+**Audit note.** Per-query parallelization and batch/page controls
 
-### S19 — Query tracing
+**URL.** https://aerospike.com/docs/graph/develop/query/query-threading/
 
-- Type: Official documentation
-- Audit note: Zipkin tracing contract
-- URL: https://aerospike.com/docs/graph/observe/query-tracing/
 
-### S27 — Architecture deep-dive blog
+### S14 : Cache management
 
-- Type: Vendor blog
-- Audit note: Optimizer and record-model explanation
-- URL: https://aerospike.com/blog/graphing-database-architecture/
+**Type.** Official documentation
 
-### S33 — AGS public source snapshot
+**Audit note.** Transactional and global record caches
 
-- Type: Apache-2.0 source
-- Audit note: 3.x-dev at ad0983e5519cbd3705f70113afd7df048c568045
-- URL: https://github.com/aerospike/aerospike-graph-service/tree/ad0983e5519cbd3705f70113afd7df048c568045
+**URL.** https://aerospike.com/docs/graph/manage/cache/
 
-### S36 — AGS AerospikeOperations
 
-- Type: Apache-2.0 source
-- Audit note: Read/write and edge mutation pipeline
-- URL: https://github.com/aerospike/aerospike-graph-service/blob/ad0983e5519cbd3705f70113afd7df048c568045/aerospike-graph-gremlin/src/main/java/com/aerospike/firefly/io/aerospike/AerospikeOperations.java
+### S15 : Data types
 
-### S37 — AGS configuration source
+**Type.** Official documentation
 
-- Type: Apache-2.0 source
-- Audit note: Code defaults and validators
-- URL: https://github.com/aerospike/aerospike-graph-service/blob/ad0983e5519cbd3705f70113afd7df048c568045/aerospike-graph-gremlin/src/main/java/com/aerospike/firefly/util/config/ConfigurationHelper.java
+**Audit note.** Property and index type limitations
 
-### S38 — AGS query code
+**URL.** https://aerospike.com/docs/graph/develop/query/data-type-support/
 
-- Type: Apache-2.0 source
-- Audit note: Paged scans and secondary-index queries
-- URL: https://github.com/aerospike/aerospike-graph-service/tree/ad0983e5519cbd3705f70113afd7df048c568045/aerospike-graph-gremlin/src/main/java/com/aerospike/firefly/io/aerospike/query
 
-### S39 — AGS traversal strategies
+### S16 : TinkerPop feature support
 
-- Type: Apache-2.0 source
-- Audit note: Rewrite implementations
-- URL: https://github.com/aerospike/aerospike-graph-service/tree/ad0983e5519cbd3705f70113afd7df048c568045/aerospike-graph-gremlin/src/main/java/com/aerospike/firefly/process/traversal/strategy
+**Type.** Official documentation
 
-### S41 — AGS tests
+**Audit note.** Feature compatibility matrix
 
-- Type: Apache-2.0 source
-- Audit note: 431 test files observed in snapshot
-- URL: https://github.com/aerospike/aerospike-graph-service/tree/ad0983e5519cbd3705f70113afd7df048c568045/aerospike-graph-gremlin/src/test
+**URL.** https://aerospike.com/docs/graph/overview/tinkerpop/
 
-### S45 — Apache TinkerPop 3.7.3 reference
 
-- Type: Upstream documentation
-- Audit note: Language/runtime semantic oracle
-- URL: https://tinkerpop.apache.org/docs/3.7.3/reference/
+### S17 : Configuration reference
+
+**Type.** Official documentation
+
+**Audit note.** AGS runtime knobs
+
+**URL.** https://aerospike.com/docs/graph/reference/config/
+
+
+### S18 : Metrics reference
+
+**Type.** Official documentation
+
+**Audit note.** Prometheus metric inventory
+
+**URL.** https://aerospike.com/docs/graph/reference/metrics/
+
+
+### S19 : Query tracing
+
+**Type.** Official documentation
+
+**Audit note.** Zipkin tracing contract
+
+**URL.** https://aerospike.com/docs/graph/observe/query-tracing/
+
+
+### S27 : Architecture deep-dive blog
+
+**Type.** Vendor blog
+
+**Audit note.** Optimizer and record-model explanation
+
+**URL.** https://aerospike.com/blog/graphing-database-architecture/
+
+
+### S33 : AGS public source snapshot
+
+**Type.** Apache-2.0 source
+
+**Audit note.** 3.x-dev at ad0983e5519cbd3705f70113afd7df048c568045
+
+**URL.** https://github.com/aerospike/aerospike-graph-service/tree/ad0983e5519cbd3705f70113afd7df048c568045
+
+
+### S36 : AGS AerospikeOperations
+
+**Type.** Apache-2.0 source
+
+**Audit note.** Read/write and edge mutation pipeline
+
+**URL.** https://github.com/aerospike/aerospike-graph-service/blob/ad0983e5519cbd3705f70113afd7df048c568045/aerospike-graph-gremlin/src/main/java/com/aerospike/firefly/io/aerospike/AerospikeOperations.java
+
+
+### S37 : AGS configuration source
+
+**Type.** Apache-2.0 source
+
+**Audit note.** Code defaults and validators
+
+**URL.** https://github.com/aerospike/aerospike-graph-service/blob/ad0983e5519cbd3705f70113afd7df048c568045/aerospike-graph-gremlin/src/main/java/com/aerospike/firefly/util/config/ConfigurationHelper.java
+
+
+### S38 : AGS query code
+
+**Type.** Apache-2.0 source
+
+**Audit note.** Paged scans and secondary-index queries
+
+**URL.** https://github.com/aerospike/aerospike-graph-service/tree/ad0983e5519cbd3705f70113afd7df048c568045/aerospike-graph-gremlin/src/main/java/com/aerospike/firefly/io/aerospike/query
+
+
+### S39 : AGS traversal strategies
+
+**Type.** Apache-2.0 source
+
+**Audit note.** Rewrite implementations
+
+**URL.** https://github.com/aerospike/aerospike-graph-service/tree/ad0983e5519cbd3705f70113afd7df048c568045/aerospike-graph-gremlin/src/main/java/com/aerospike/firefly/process/traversal/strategy
+
+
+### S41 : AGS tests
+
+**Type.** Apache-2.0 source
+
+**Audit note.** 431 test files observed in snapshot
+
+**URL.** https://github.com/aerospike/aerospike-graph-service/tree/ad0983e5519cbd3705f70113afd7df048c568045/aerospike-graph-gremlin/src/test
+
+
+### S45 : Apache TinkerPop 3.7.3 reference
+
+**Type.** Upstream documentation
+
+**Audit note.** Language/runtime semantic oracle
+
+**URL.** https://tinkerpop.apache.org/docs/3.7.3/reference/

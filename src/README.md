@@ -1,10 +1,10 @@
-# Documentation generators
+# Research maintenance tools
 
-Generators in this directory produce deterministic Markdown under `docs/`.
-Each dedicated engine dossier has its own subdirectory so released and
-development source pins, source registers, and qualification matrices can
-evolve independently.
+The scripts in this directory maintain the broad engine inventory, selected
+engine dossiers, and repository validation. Generated and manually maintained
+documents are deliberately distinguished.
 
-Current dedicated generators cover Aerospike Graph, AgensGraph, and
-AllegroGraph. The AllegroGraph generator deliberately distinguishes its
-proprietary server from the commit-pinned public clients and container tooling.
+The Aerospike Graph dossier is written and maintained directly under
+`docs/research/aerospike/`. It has no documentation generator. AgensGraph and
+AllegroGraph still have dedicated generators; the latter distinguishes its
+proprietary server from commit-pinned public clients and container tooling.
