@@ -33,6 +33,12 @@ This document answers two questions: what this engine actually proves in 2026, a
 - F04 — The compute and storage layers scale independently.
 - F05 — A traversal can translate into multiple storage operations, so record-operation count and fanout are mandatory metrics.
 
+### Dedicated Aerospike refactor
+
+This breadth-oriented file is retained for corpus compatibility. The current source-level audit is the multi-spec [Aerospike dossier](./aerospike/00-index.md), which pins Graph 3.2.3 and public `3.3.0-SNAPSHOT` source, corrects the read/transaction consistency summary, reconstructs the packed record layout, audits the 2025 identity benchmark, and defines the qualification program.
+
+Do not use this overview's compact transaction, licensing, scale, or storage statements when the dedicated dossier supplies a version-qualified answer.
+
 ### Bottom-line fit against zu's target
 
 - Very-low latency: compare hot point and bounded traversal paths; never extrapolate from scans or algorithms.

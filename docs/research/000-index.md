@@ -60,7 +60,7 @@ Every engine receives one file. Kuzu and RedisGraph remain separate historical f
 - [AllegroGraph](./engine-allegrograph.md) — commercial RDF/knowledge graph database; active 9.x line.
 - [Blazegraph (legacy)](./engine-blazegraph.md) — RDF graph database; archived repository; historical benchmark baseline.
 - [RedisGraph (legacy)](./engine-redisgraph.md) — matrix property graph; end-of-life lineage continued by FalkorDB.
-- [Aerospike Graph](./engine-aerospike_graph.md) — stateless Gremlin compute over distributed KV storage; active commercial product.
+- [Aerospike Graph — dedicated 2026 source audit](./aerospike/00-index.md) — stateless Gremlin compute over distributed KV storage; released 3.2.3 plus pinned public 3.3.0-SNAPSHOT source. [Breadth overview](./engine-aerospike_graph.md).
 - [Huawei Cloud Graph Engine Service (GES)](./engine-huawei_ges.md) — managed distributed graph engine; active; GQL added in 2025 and docs refreshed in 2026.
 - [DataStax Enterprise Graph](./engine-datastax_enterprise_graph.md) — Cassandra-integrated distributed graph; maintained DSE 6.9 documentation; legacy strategic baseline rather than a modern standalone graph focus.
 - [IBM Db2 Graph](./engine-ibm_db2_graph.md) — Gremlin layer over Db2 relational data; legacy/limited: current IBM page says standalone support is tied to Db2 11.5.6–11.5.8.
