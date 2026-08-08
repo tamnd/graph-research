@@ -108,654 +108,625 @@ Warm-cache comparisons are invalid unless every competitor receives equivalent p
 
 ## Query qualification cases
 
+### Provider strategies are the physical planner
+
+The strategy tree is the closest public source equivalent to a physical
+optimizer. For example, the pinned source declares:
+
+```java
+public class FireflyBatchVertexReadStrategy extends FireflyStrategyBase
+```
+
+The declaration is from
+[`FireflyBatchVertexReadStrategy.java`](https://github.com/aerospike/aerospike-graph-service/blob/ad0983e5519cbd3705f70113afd7df048c568045/aerospike-graph-gremlin/src/main/java/com/aerospike/firefly/process/traversal/strategy/optimization/FireflyBatchVertexReadStrategy.java).
+The inheritance matters because AGS registers provider strategies that inspect
+and replace recognizable TinkerPop step patterns. This is not a global
+cost-based search over arbitrary equivalent plans. Syntactic placement can
+therefore determine whether IDs are batched, whether an adjacent endpoint is
+read directly, whether a predicate becomes a Database filter expression, or
+whether a graph root becomes a secondary-index query or scan. Query reviews
+need the optimized traversal, not just the submitted Gremlin string.
+
+Batching also has a cluster-dependent shape. Known keys are grouped by target
+Database node, and source defaults include a per-node batch size. Increasing
+Database nodes can increase the total in-flight key count even when the AGS
+setting is unchanged. That can improve device parallelism, but it can also
+increase response buffers, allocations, and tail exposure. A batch setting is
+therefore recorded with the Database node count and partition state. The same
+principle applies to paged scans and secondary-index streams: a per-node page
+size becomes a fleet-wide memory and network quantity.
+
+Cache results need equally careful language. Transactional mode is request or
+thread local and is reset at the traversal boundary. Global mode shares record
+objects inside one AGS graph instance and maintains additional supernode edge
+ID state. It can reduce Database commands for repeated hot reads, but separate
+AGS instances have separate contents and the documented mode permits stale
+records. A warm global-cache latency result is not a transparent improvement
+over transactional mode. It is a different freshness and memory configuration
+that must be scored separately.
+
+| Traversal shape | Likely physical root | Main optimization opportunity | Main failure mode |
+| --- | --- | --- | --- |
+| `g.V(id)` | Direct vertex record read | Single-key path and request-local cache | Client or record timeout |
+| `g.V(id1, id2, ...)` | Node-grouped batch reads | Fewer round trips and parallel device access | Oversized buffers or straggler node |
+| Indexed `hasLabel` plus property | Secondary-index query followed by reads | Selective root and filter expression | Low selectivity floods query threads |
+| Unindexed `g.V()` predicate | Paged global scan | Scan profiling and strict admission | OLTP interference and unbounded work |
+| Ordinary `out(label)` | Inline adjacency plus batched endpoint reads | Adjacent-ID shortcut | Degree and projection expansion |
+| Supernode `out(label)` | Specialized secondary-index edge lookup | Label and property pushdown | Query-thread pressure and paging tails |
+| `g.E()` | Global edge scan | Version-specific scan improvements | Treating scan throughput as traversal latency |
+
 Every query case uses the same graph snapshot and an independent result oracle. The run captures submitted bytecode, provider-optimized traversal, TinkerPop profile, Zipkin spans, AGS queue and cache metrics, Database command histograms, bytes read, result cardinality, and cancellation behavior. Point, index, supernode, and scan cases run in separate traffic classes so one path does not hide another.
 
 Cold, request-cache, global-cache, steady-state, saturation, and slow-consumer phases are named explicitly. Errors, retries, timeouts, and partial streams stay in the sample set. A semantic mismatch or an unexpected scan fails the case even when its latency is low. A provider rewrite is credited only when the saved optimized traversal and backend counters demonstrate that it fired.
 
-### Q001 : query: V(id)
-
-**Purpose.** Prove one point-root path and stable ID semantics.
-
-**Evidence anchors.** S09,S11–S19,S27,S33,S36–S41,S45
-
-
-### Q002 : query: V(id1,id2,...)
-
-**Purpose.** Observe batch partitioning by database node.
-
-**Evidence anchors.** S09,S11–S19,S27,S33,S36–S41,S45
-
-
-### Q003 : query: V().hasLabel indexed
-
-**Purpose.** Verify secondary index rather than scan.
-
-**Evidence anchors.** S09,S11–S19,S27,S33,S36–S41,S45
-
-
-### Q004 : query: V().hasLabel unindexed
-
-**Purpose.** Expose scan and scan-disable behavior.
-
-**Evidence anchors.** S09,S11–S19,S27,S33,S36–S41,S45
-
-
-### Q005 : query: V().has string equality
-
-**Purpose.** Use compatible string index.
-
-**Evidence anchors.** S09,S11–S19,S27,S33,S36–S41,S45
-
-
-### Q006 : query: V().has numeric equality
-
-**Purpose.** Use compatible numeric index.
-
-**Evidence anchors.** S09,S11–S19,S27,S33,S36–S41,S45
-
-
-### Q007 : query: V().has numeric range
-
-**Purpose.** Inspect range filter and remaining predicates.
-
-**Evidence anchors.** S09,S11–S19,S27,S33,S36–S41,S45
-
-
-### Q008 : query: V().has Double
-
-**Purpose.** Expose unindexed fallback.
-
-**Evidence anchors.** S09,S11–S19,S27,S33,S36–S41,S45
-
-
-### Q009 : query: V().has substring
-
-**Purpose.** Expose full scan and filter cost.
-
-**Evidence anchors.** S09,S11–S19,S27,S33,S36–S41,S45
-
-
-### Q010 : query: compound equality
-
-**Purpose.** Observe expression-index selection.
-
-**Evidence anchors.** S09,S11–S19,S27,S33,S36–S41,S45
-
-
-### Q011 : query: two eligible indexes
-
-**Purpose.** Verify cardinality-based most-selective root.
-
-**Evidence anchors.** S09,S11–S19,S27,S33,S36–S41,S45
-
-
-### Q012 : query: stale cardinality metadata
-
-**Purpose.** Measure plan lag after data distribution changes.
-
-**Evidence anchors.** S09,S11–S19,S27,S33,S36–S41,S45
-
-
-### Q013 : query: outE label
-
-**Purpose.** Count vertex and packed-edge reads.
-
-**Evidence anchors.** S09,S11–S19,S27,S33,S36–S41,S45
-
-
-### Q014 : query: out adjacent vertices
-
-**Purpose.** Verify edge-skipping/batch rewrite.
-
-**Evidence anchors.** S09,S11–S19,S27,S33,S36–S41,S45
-
-
-### Q015 : query: in adjacent vertices
-
-**Purpose.** Verify reverse ordinary adjacency path.
-
-**Evidence anchors.** S09,S11–S19,S27,S33,S36–S41,S45
-
-
-### Q016 : query: both self-loop
-
-**Purpose.** Verify multiplicity and dedup semantics.
-
-**Evidence anchors.** S09,S11–S19,S27,S33,S36–S41,S45
-
-
-### Q017 : query: otherV
-
-**Purpose.** Verify batched adjacent endpoint reads.
-
-**Evidence anchors.** S09,S11–S19,S27,S33,S36–S41,S45
-
-
-### Q018 : query: edge-to-vertex
-
-**Purpose.** Verify specialized batch step.
-
-**Evidence anchors.** S09,S11–S19,S27,S33,S36–S41,S45
-
-
-### Q019 : query: has after VertexStep
-
-**Purpose.** Verify predicate folding/pushdown.
-
-**Evidence anchors.** S09,S11–S19,S27,S33,S36–S41,S45
-
-
-### Q020 : query: limit after VertexStep
-
-**Purpose.** Verify early termination and reduced I/O.
-
-**Evidence anchors.** S09,S11–S19,S27,S33,S36–S41,S45
-
-
-### Q021 : query: sample after VertexStep
-
-**Purpose.** Verify sample semantics without reading all candidates.
-
-**Evidence anchors.** S09,S11–S19,S27,S33,S36–S41,S45
-
-
-### Q022 : query: local edge count
-
-**Purpose.** Verify adjacency-local count without edge fetch.
-
-**Evidence anchors.** S09,S11–S19,S27,S33,S36–S41,S45
-
-
-### Q023 : query: global vertex count
-
-**Purpose.** Verify count optimization and exactness during mutation.
-
-**Evidence anchors.** S09,S11–S19,S27,S33,S36–S41,S45
-
-
-### Q024 : query: global edge count
-
-**Purpose.** Verify summary/scan path and exactness.
-
-**Evidence anchors.** S09,S11–S19,S27,S33,S36–S41,S45
-
-
-### Q025 : query: properties projection
-
-**Purpose.** Fetch only required map entries.
-
-**Evidence anchors.** S09,S11–S19,S27,S33,S36–S41,S45
-
-
-### Q026 : query: valueMap
-
-**Purpose.** Measure requested versus materialized properties.
-
-**Evidence anchors.** S09,S11–S19,S27,S33,S36–S41,S45
-
-
-### Q027 : query: elementMap
-
-**Purpose.** Inspect provider-specific projection rewrite.
-
-**Evidence anchors.** S09,S11–S19,S27,S33,S36–S41,S45
-
-
-### Q028 : query: path
-
-**Purpose.** Charge path object retention and edge/vertex materialization.
-
-**Evidence anchors.** S09,S11–S19,S27,S33,S36–S41,S45
-
-
-### Q029 : query: simplePath
-
-**Purpose.** Charge visited-set memory and compare semantics.
-
-**Evidence anchors.** S09,S11–S19,S27,S33,S36–S41,S45
-
-
-### Q030 : query: dedup
-
-**Purpose.** Measure hash state and spill/limit behavior.
-
-**Evidence anchors.** S09,S11–S19,S27,S33,S36–S41,S45
-
-
-### Q031 : query: order
-
-**Purpose.** Expose full materialization and memory.
-
-**Evidence anchors.** S09,S11–S19,S27,S33,S36–S41,S45
-
-
-### Q032 : query: groupCount
-
-**Purpose.** Classify as OLTP traversal or move to OLAP path.
-
-**Evidence anchors.** S09,S11–S19,S27,S33,S36–S41,S45
-
-
-### Q033 : query: repeat depth 2
-
-**Purpose.** Measure batched frontier behavior.
-
-**Evidence anchors.** S09,S11–S19,S27,S33,S36–S41,S45
-
-
-### Q034 : query: repeat depth 4
-
-**Purpose.** Expose multiplicative frontier and request limits.
-
-**Evidence anchors.** S09,S11–S19,S27,S33,S36–S41,S45
-
-
-### Q035 : query: repeat emit
-
-**Purpose.** Verify 3.2.1 optimization and output semantics.
-
-**Evidence anchors.** S09,S11–S19,S27,S33,S36–S41,S45
-
-
-### Q036 : query: union child traversal
-
-**Purpose.** Verify options and filters propagate into children.
-
-**Evidence anchors.** S09,S11–S19,S27,S33,S36–S41,S45
-
-
-### Q037 : query: coalesce
-
-**Purpose.** Check rewrite coverage and short-circuit reads.
-
-**Evidence anchors.** S09,S11–S19,S27,S33,S36–S41,S45
-
-
-### Q038 : query: optional
-
-**Purpose.** Check null/missing branch semantics.
-
-**Evidence anchors.** S09,S11–S19,S27,S33,S36–S41,S45
-
-
-### Q039 : query: mergeV unique ID
-
-**Purpose.** Avoid index ambiguity and count lock/query operations.
-
-**Evidence anchors.** S09,S11–S19,S27,S33,S36–S41,S45
-
-
-### Q040 : query: mergeV nonunique predicate
-
-**Purpose.** Expose multi-match behavior documented by AGS.
-
-**Evidence anchors.** S09,S11–S19,S27,S33,S36–S41,S45
-
-
-### Q041 : query: mergeE ordinary
-
-**Purpose.** Measure lock and adjacency operations.
-
-**Evidence anchors.** S09,S11–S19,S27,S33,S36–S41,S45
-
-
-### Q042 : query: mergeE supernode
-
-**Purpose.** Expose sindex query-thread consumption.
-
-**Evidence anchors.** S09,S11–S19,S27,S33,S36–S41,S45
-
-
-### Q043 : query: drop edge
-
-**Purpose.** Verify specialized drop and cleanup.
-
-**Evidence anchors.** S09,S11–S19,S27,S33,S36–S41,S45
-
-
-### Q044 : query: drop ordinary vertex
-
-**Purpose.** Count incident-edge work and atomicity mode.
-
-**Evidence anchors.** S09,S11–S19,S27,S33,S36–S41,S45
-
-
-### Q045 : query: drop supernode
-
-**Purpose.** Record best-effort semantics and completion lag.
-
-**Evidence anchors.** S09,S11–S19,S27,S33,S36–S41,S45
-
-
-### Q046 : query: scan disabled global
-
-**Purpose.** Reject accidental V()/E() without eligible index.
-
-**Evidence anchors.** S09,S11–S19,S27,S33,S36–S41,S45
-
-
-### Q047 : query: per-query scan opt-in
-
-**Purpose.** Prove explicit escape hatch is auditable.
-
-**Evidence anchors.** S09,S11–S19,S27,S33,S36–S41,S45
-
-
-### Q048 : query: page size per node
-
-**Purpose.** Measure memory/latency as DB cluster grows.
-
-**Evidence anchors.** S09,S11–S19,S27,S33,S36–S41,S45
-
-
-### Q049 : query: flat page size
-
-**Purpose.** Bound cluster-wide response buffering.
-
-**Evidence anchors.** S09,S11–S19,S27,S33,S36–S41,S45
-
-
-### Q050 : query: batch size per node
-
-**Purpose.** Measure RPC count and result latency.
-
-**Evidence anchors.** S09,S11–S19,S27,S33,S36–S41,S45
-
-
-### Q051 : query: flat batch size
-
-**Purpose.** Hold total batch constant across node count.
-
-**Evidence anchors.** S09,S11–S19,S27,S33,S36–S41,S45
-
-
-### Q052 : query: parallelize 1
-
-**Purpose.** Establish default-equivalent baseline.
-
-**Evidence anchors.** S09,S11–S19,S27,S33,S36–S41,S45
-
-
-### Q053 : query: parallelize 2
-
-**Purpose.** Measure single-query gain and fleet interference.
-
-**Evidence anchors.** S09,S11–S19,S27,S33,S36–S41,S45
-
-
-### Q054 : query: parallelize CPU count
-
-**Purpose.** Expose executor saturation and tail risk.
-
-**Evidence anchors.** S09,S11–S19,S27,S33,S36–S41,S45
-
-
-### Q055 : query: parallelize in transaction
-
-**Purpose.** Verify explicit rejection.
-
-**Evidence anchors.** S09,S11–S19,S27,S33,S36–S41,S45
-
-
-### Q056 : query: transactional cache cold
-
-**Purpose.** Establish per-request backend I/O.
-
-**Evidence anchors.** S09,S11–S19,S27,S33,S36–S41,S45
-
-
-### Q057 : query: transactional cache repeated vertex
-
-**Purpose.** Observe within-traversal hit only.
-
-**Evidence anchors.** S09,S11–S19,S27,S33,S36–S41,S45
-
-
-### Q058 : query: global cache warm
-
-**Purpose.** Measure best-case repeated hot-set reads.
-
-**Evidence anchors.** S09,S11–S19,S27,S33,S36–S41,S45
-
-
-### Q059 : query: global cache stale local write
-
-**Purpose.** Demonstrate documented correctness risk.
-
-**Evidence anchors.** S09,S11–S19,S27,S33,S36–S41,S45
-
-
-### Q060 : query: global cache stale other AGS
-
-**Purpose.** Demonstrate fleet incoherence.
-
-**Evidence anchors.** S09,S11–S19,S27,S33,S36–S41,S45
-
-
-### Q061 : query: global cache reset
-
-**Purpose.** Measure invalidation latency and traffic surge.
-
-**Evidence anchors.** S09,S11–S19,S27,S33,S36–S41,S45
-
-
-### Q062 : query: query trace threshold
-
-**Purpose.** Correlate spans with backend calls without full-sampling overhead.
-
-**Evidence anchors.** S09,S11–S19,S27,S33,S36–S41,S45
-
-
-### Q063 : query: query profile
-
-**Purpose.** Capture rewritten step plan and per-step timing.
-
-**Evidence anchors.** S09,S11–S19,S27,S33,S36–S41,S45
-
-
-### Q064 : query: timeout cancellation
-
-**Purpose.** Verify work stops in AGS and Database after client timeout.
-
-**Evidence anchors.** S09,S11–S19,S27,S33,S36–S41,S45
-
-
-### Q065 : query: client disconnect
-
-**Purpose.** Verify iterator/query resources are reclaimed.
-
-**Evidence anchors.** S09,S11–S19,S27,S33,S36–S41,S45
-
-
-### Q066 : query: backpressure slow client
-
-**Purpose.** Bound result buffering and heap.
-
-**Evidence anchors.** S09,S11–S19,S27,S33,S36–S41,S45
-
-
-### Q067 : query: mixed short and scan
-
-**Purpose.** Verify scan admission does not destroy short-query tail.
-
-**Evidence anchors.** S09,S11–S19,S27,S33,S36–S41,S45
-
-
-### Q068 : query: mixed short and supernode
-
-**Purpose.** Verify heavy traversal isolation.
-
-**Evidence anchors.** S09,S11–S19,S27,S33,S36–S41,S45
-
-
-### Q069 : query: 32 AGS scale
-
-**Purpose.** Locate storage saturation and load-balancer skew.
-
-**Evidence anchors.** S09,S11–S19,S27,S33,S36–S41,S45
-
+<table>
+<thead>
+<tr>
+<th>Case</th>
+<th>Subject</th>
+<th>Engineering question</th>
+<th>Evidence</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Q001</td>
+<td>query: V(id)</td>
+<td>Prove one point-root path and stable ID semantics.</td>
+<td>S09,S11–S19,S27,S33,S36–S41,S45</td>
+</tr>
+<tr>
+<td>Q002</td>
+<td>query: V(id1,id2,...)</td>
+<td>Observe batch partitioning by database node.</td>
+<td>S09,S11–S19,S27,S33,S36–S41,S45</td>
+</tr>
+<tr>
+<td>Q003</td>
+<td>query: V().hasLabel indexed</td>
+<td>Verify secondary index rather than scan.</td>
+<td>S09,S11–S19,S27,S33,S36–S41,S45</td>
+</tr>
+<tr>
+<td>Q004</td>
+<td>query: V().hasLabel unindexed</td>
+<td>Expose scan and scan-disable behavior.</td>
+<td>S09,S11–S19,S27,S33,S36–S41,S45</td>
+</tr>
+<tr>
+<td>Q005</td>
+<td>query: V().has string equality</td>
+<td>Use compatible string index.</td>
+<td>S09,S11–S19,S27,S33,S36–S41,S45</td>
+</tr>
+<tr>
+<td>Q006</td>
+<td>query: V().has numeric equality</td>
+<td>Use compatible numeric index.</td>
+<td>S09,S11–S19,S27,S33,S36–S41,S45</td>
+</tr>
+<tr>
+<td>Q007</td>
+<td>query: V().has numeric range</td>
+<td>Inspect range filter and remaining predicates.</td>
+<td>S09,S11–S19,S27,S33,S36–S41,S45</td>
+</tr>
+<tr>
+<td>Q008</td>
+<td>query: V().has Double</td>
+<td>Expose unindexed fallback.</td>
+<td>S09,S11–S19,S27,S33,S36–S41,S45</td>
+</tr>
+<tr>
+<td>Q009</td>
+<td>query: V().has substring</td>
+<td>Expose full scan and filter cost.</td>
+<td>S09,S11–S19,S27,S33,S36–S41,S45</td>
+</tr>
+<tr>
+<td>Q010</td>
+<td>query: compound equality</td>
+<td>Observe expression-index selection.</td>
+<td>S09,S11–S19,S27,S33,S36–S41,S45</td>
+</tr>
+<tr>
+<td>Q011</td>
+<td>query: two eligible indexes</td>
+<td>Verify cardinality-based most-selective root.</td>
+<td>S09,S11–S19,S27,S33,S36–S41,S45</td>
+</tr>
+<tr>
+<td>Q012</td>
+<td>query: stale cardinality metadata</td>
+<td>Measure plan lag after data distribution changes.</td>
+<td>S09,S11–S19,S27,S33,S36–S41,S45</td>
+</tr>
+<tr>
+<td>Q013</td>
+<td>query: outE label</td>
+<td>Count vertex and packed-edge reads.</td>
+<td>S09,S11–S19,S27,S33,S36–S41,S45</td>
+</tr>
+<tr>
+<td>Q014</td>
+<td>query: out adjacent vertices</td>
+<td>Verify edge-skipping/batch rewrite.</td>
+<td>S09,S11–S19,S27,S33,S36–S41,S45</td>
+</tr>
+<tr>
+<td>Q015</td>
+<td>query: in adjacent vertices</td>
+<td>Verify reverse ordinary adjacency path.</td>
+<td>S09,S11–S19,S27,S33,S36–S41,S45</td>
+</tr>
+<tr>
+<td>Q016</td>
+<td>query: both self-loop</td>
+<td>Verify multiplicity and dedup semantics.</td>
+<td>S09,S11–S19,S27,S33,S36–S41,S45</td>
+</tr>
+<tr>
+<td>Q017</td>
+<td>query: otherV</td>
+<td>Verify batched adjacent endpoint reads.</td>
+<td>S09,S11–S19,S27,S33,S36–S41,S45</td>
+</tr>
+<tr>
+<td>Q018</td>
+<td>query: edge-to-vertex</td>
+<td>Verify specialized batch step.</td>
+<td>S09,S11–S19,S27,S33,S36–S41,S45</td>
+</tr>
+<tr>
+<td>Q019</td>
+<td>query: has after VertexStep</td>
+<td>Verify predicate folding/pushdown.</td>
+<td>S09,S11–S19,S27,S33,S36–S41,S45</td>
+</tr>
+<tr>
+<td>Q020</td>
+<td>query: limit after VertexStep</td>
+<td>Verify early termination and reduced I/O.</td>
+<td>S09,S11–S19,S27,S33,S36–S41,S45</td>
+</tr>
+<tr>
+<td>Q021</td>
+<td>query: sample after VertexStep</td>
+<td>Verify sample semantics without reading all candidates.</td>
+<td>S09,S11–S19,S27,S33,S36–S41,S45</td>
+</tr>
+<tr>
+<td>Q022</td>
+<td>query: local edge count</td>
+<td>Verify adjacency-local count without edge fetch.</td>
+<td>S09,S11–S19,S27,S33,S36–S41,S45</td>
+</tr>
+<tr>
+<td>Q023</td>
+<td>query: global vertex count</td>
+<td>Verify count optimization and exactness during mutation.</td>
+<td>S09,S11–S19,S27,S33,S36–S41,S45</td>
+</tr>
+<tr>
+<td>Q024</td>
+<td>query: global edge count</td>
+<td>Verify summary/scan path and exactness.</td>
+<td>S09,S11–S19,S27,S33,S36–S41,S45</td>
+</tr>
+<tr>
+<td>Q025</td>
+<td>query: properties projection</td>
+<td>Fetch only required map entries.</td>
+<td>S09,S11–S19,S27,S33,S36–S41,S45</td>
+</tr>
+<tr>
+<td>Q026</td>
+<td>query: valueMap</td>
+<td>Measure requested versus materialized properties.</td>
+<td>S09,S11–S19,S27,S33,S36–S41,S45</td>
+</tr>
+<tr>
+<td>Q027</td>
+<td>query: elementMap</td>
+<td>Inspect provider-specific projection rewrite.</td>
+<td>S09,S11–S19,S27,S33,S36–S41,S45</td>
+</tr>
+<tr>
+<td>Q028</td>
+<td>query: path</td>
+<td>Charge path object retention and edge/vertex materialization.</td>
+<td>S09,S11–S19,S27,S33,S36–S41,S45</td>
+</tr>
+<tr>
+<td>Q029</td>
+<td>query: simplePath</td>
+<td>Charge visited-set memory and compare semantics.</td>
+<td>S09,S11–S19,S27,S33,S36–S41,S45</td>
+</tr>
+<tr>
+<td>Q030</td>
+<td>query: dedup</td>
+<td>Measure hash state and spill/limit behavior.</td>
+<td>S09,S11–S19,S27,S33,S36–S41,S45</td>
+</tr>
+<tr>
+<td>Q031</td>
+<td>query: order</td>
+<td>Expose full materialization and memory.</td>
+<td>S09,S11–S19,S27,S33,S36–S41,S45</td>
+</tr>
+<tr>
+<td>Q032</td>
+<td>query: groupCount</td>
+<td>Classify as OLTP traversal or move to OLAP path.</td>
+<td>S09,S11–S19,S27,S33,S36–S41,S45</td>
+</tr>
+<tr>
+<td>Q033</td>
+<td>query: repeat depth 2</td>
+<td>Measure batched frontier behavior.</td>
+<td>S09,S11–S19,S27,S33,S36–S41,S45</td>
+</tr>
+<tr>
+<td>Q034</td>
+<td>query: repeat depth 4</td>
+<td>Expose multiplicative frontier and request limits.</td>
+<td>S09,S11–S19,S27,S33,S36–S41,S45</td>
+</tr>
+<tr>
+<td>Q035</td>
+<td>query: repeat emit</td>
+<td>Verify 3.2.1 optimization and output semantics.</td>
+<td>S09,S11–S19,S27,S33,S36–S41,S45</td>
+</tr>
+<tr>
+<td>Q036</td>
+<td>query: union child traversal</td>
+<td>Verify options and filters propagate into children.</td>
+<td>S09,S11–S19,S27,S33,S36–S41,S45</td>
+</tr>
+<tr>
+<td>Q037</td>
+<td>query: coalesce</td>
+<td>Check rewrite coverage and short-circuit reads.</td>
+<td>S09,S11–S19,S27,S33,S36–S41,S45</td>
+</tr>
+<tr>
+<td>Q038</td>
+<td>query: optional</td>
+<td>Check null/missing branch semantics.</td>
+<td>S09,S11–S19,S27,S33,S36–S41,S45</td>
+</tr>
+<tr>
+<td>Q039</td>
+<td>query: mergeV unique ID</td>
+<td>Avoid index ambiguity and count lock/query operations.</td>
+<td>S09,S11–S19,S27,S33,S36–S41,S45</td>
+</tr>
+<tr>
+<td>Q040</td>
+<td>query: mergeV nonunique predicate</td>
+<td>Expose multi-match behavior documented by AGS.</td>
+<td>S09,S11–S19,S27,S33,S36–S41,S45</td>
+</tr>
+<tr>
+<td>Q041</td>
+<td>query: mergeE ordinary</td>
+<td>Measure lock and adjacency operations.</td>
+<td>S09,S11–S19,S27,S33,S36–S41,S45</td>
+</tr>
+<tr>
+<td>Q042</td>
+<td>query: mergeE supernode</td>
+<td>Expose sindex query-thread consumption.</td>
+<td>S09,S11–S19,S27,S33,S36–S41,S45</td>
+</tr>
+<tr>
+<td>Q043</td>
+<td>query: drop edge</td>
+<td>Verify specialized drop and cleanup.</td>
+<td>S09,S11–S19,S27,S33,S36–S41,S45</td>
+</tr>
+<tr>
+<td>Q044</td>
+<td>query: drop ordinary vertex</td>
+<td>Count incident-edge work and atomicity mode.</td>
+<td>S09,S11–S19,S27,S33,S36–S41,S45</td>
+</tr>
+<tr>
+<td>Q045</td>
+<td>query: drop supernode</td>
+<td>Record best-effort semantics and completion lag.</td>
+<td>S09,S11–S19,S27,S33,S36–S41,S45</td>
+</tr>
+<tr>
+<td>Q046</td>
+<td>query: scan disabled global</td>
+<td>Reject accidental V()/E() without eligible index.</td>
+<td>S09,S11–S19,S27,S33,S36–S41,S45</td>
+</tr>
+<tr>
+<td>Q047</td>
+<td>query: per-query scan opt-in</td>
+<td>Prove explicit escape hatch is auditable.</td>
+<td>S09,S11–S19,S27,S33,S36–S41,S45</td>
+</tr>
+<tr>
+<td>Q048</td>
+<td>query: page size per node</td>
+<td>Measure memory/latency as DB cluster grows.</td>
+<td>S09,S11–S19,S27,S33,S36–S41,S45</td>
+</tr>
+<tr>
+<td>Q049</td>
+<td>query: flat page size</td>
+<td>Bound cluster-wide response buffering.</td>
+<td>S09,S11–S19,S27,S33,S36–S41,S45</td>
+</tr>
+<tr>
+<td>Q050</td>
+<td>query: batch size per node</td>
+<td>Measure RPC count and result latency.</td>
+<td>S09,S11–S19,S27,S33,S36–S41,S45</td>
+</tr>
+<tr>
+<td>Q051</td>
+<td>query: flat batch size</td>
+<td>Hold total batch constant across node count.</td>
+<td>S09,S11–S19,S27,S33,S36–S41,S45</td>
+</tr>
+<tr>
+<td>Q052</td>
+<td>query: parallelize 1</td>
+<td>Establish default-equivalent baseline.</td>
+<td>S09,S11–S19,S27,S33,S36–S41,S45</td>
+</tr>
+<tr>
+<td>Q053</td>
+<td>query: parallelize 2</td>
+<td>Measure single-query gain and fleet interference.</td>
+<td>S09,S11–S19,S27,S33,S36–S41,S45</td>
+</tr>
+<tr>
+<td>Q054</td>
+<td>query: parallelize CPU count</td>
+<td>Expose executor saturation and tail risk.</td>
+<td>S09,S11–S19,S27,S33,S36–S41,S45</td>
+</tr>
+<tr>
+<td>Q055</td>
+<td>query: parallelize in transaction</td>
+<td>Verify explicit rejection.</td>
+<td>S09,S11–S19,S27,S33,S36–S41,S45</td>
+</tr>
+<tr>
+<td>Q056</td>
+<td>query: transactional cache cold</td>
+<td>Establish per-request backend I/O.</td>
+<td>S09,S11–S19,S27,S33,S36–S41,S45</td>
+</tr>
+<tr>
+<td>Q057</td>
+<td>query: transactional cache repeated vertex</td>
+<td>Observe within-traversal hit only.</td>
+<td>S09,S11–S19,S27,S33,S36–S41,S45</td>
+</tr>
+<tr>
+<td>Q058</td>
+<td>query: global cache warm</td>
+<td>Measure best-case repeated hot-set reads.</td>
+<td>S09,S11–S19,S27,S33,S36–S41,S45</td>
+</tr>
+<tr>
+<td>Q059</td>
+<td>query: global cache stale local write</td>
+<td>Demonstrate documented correctness risk.</td>
+<td>S09,S11–S19,S27,S33,S36–S41,S45</td>
+</tr>
+<tr>
+<td>Q060</td>
+<td>query: global cache stale other AGS</td>
+<td>Demonstrate fleet incoherence.</td>
+<td>S09,S11–S19,S27,S33,S36–S41,S45</td>
+</tr>
+<tr>
+<td>Q061</td>
+<td>query: global cache reset</td>
+<td>Measure invalidation latency and traffic surge.</td>
+<td>S09,S11–S19,S27,S33,S36–S41,S45</td>
+</tr>
+<tr>
+<td>Q062</td>
+<td>query: query trace threshold</td>
+<td>Correlate spans with backend calls without full-sampling overhead.</td>
+<td>S09,S11–S19,S27,S33,S36–S41,S45</td>
+</tr>
+<tr>
+<td>Q063</td>
+<td>query: query profile</td>
+<td>Capture rewritten step plan and per-step timing.</td>
+<td>S09,S11–S19,S27,S33,S36–S41,S45</td>
+</tr>
+<tr>
+<td>Q064</td>
+<td>query: timeout cancellation</td>
+<td>Verify work stops in AGS and Database after client timeout.</td>
+<td>S09,S11–S19,S27,S33,S36–S41,S45</td>
+</tr>
+<tr>
+<td>Q065</td>
+<td>query: client disconnect</td>
+<td>Verify iterator/query resources are reclaimed.</td>
+<td>S09,S11–S19,S27,S33,S36–S41,S45</td>
+</tr>
+<tr>
+<td>Q066</td>
+<td>query: backpressure slow client</td>
+<td>Bound result buffering and heap.</td>
+<td>S09,S11–S19,S27,S33,S36–S41,S45</td>
+</tr>
+<tr>
+<td>Q067</td>
+<td>query: mixed short and scan</td>
+<td>Verify scan admission does not destroy short-query tail.</td>
+<td>S09,S11–S19,S27,S33,S36–S41,S45</td>
+</tr>
+<tr>
+<td>Q068</td>
+<td>query: mixed short and supernode</td>
+<td>Verify heavy traversal isolation.</td>
+<td>S09,S11–S19,S27,S33,S36–S41,S45</td>
+</tr>
+<tr>
+<td>Q069</td>
+<td>query: 32 AGS scale</td>
+<td>Locate storage saturation and load-balancer skew.</td>
+<td>S09,S11–S19,S27,S33,S36–S41,S45</td>
+</tr>
+</tbody>
+</table>
 
 ## Source register
 
 The retrieval date for web sources is the research cut. Git sources are pinned by commit. A source being official establishes what was stated or implemented; it does not independently establish a performance claim.
 
-### S09 : Architecture
-
-**Type.** Official documentation
-
-**Audit note.** Three-layer request path
-
-**URL.** https://aerospike.com/docs/graph/overview/architecture/
-
-
-### S11 : Indexing
-
-**Type.** Official documentation
-
-**Audit note.** Vertex index and scan controls
-
-**URL.** https://aerospike.com/docs/graph/develop/query/indexing/
-
-
-### S12 : Supernodes
-
-**Type.** Official documentation
-
-**Audit note.** Thresholds and filtered traversal guidance
-
-**URL.** https://aerospike.com/docs/graph/develop/query/supernodes/
-
-
-### S13 : Query threading
-
-**Type.** Official documentation
-
-**Audit note.** Per-query parallelization and batch/page controls
-
-**URL.** https://aerospike.com/docs/graph/develop/query/query-threading/
-
-
-### S14 : Cache management
-
-**Type.** Official documentation
-
-**Audit note.** Transactional and global record caches
-
-**URL.** https://aerospike.com/docs/graph/manage/cache/
-
-
-### S15 : Data types
-
-**Type.** Official documentation
-
-**Audit note.** Property and index type limitations
-
-**URL.** https://aerospike.com/docs/graph/develop/query/data-type-support/
-
-
-### S16 : TinkerPop feature support
-
-**Type.** Official documentation
-
-**Audit note.** Feature compatibility matrix
-
-**URL.** https://aerospike.com/docs/graph/overview/tinkerpop/
-
-
-### S17 : Configuration reference
-
-**Type.** Official documentation
-
-**Audit note.** AGS runtime knobs
-
-**URL.** https://aerospike.com/docs/graph/reference/config/
-
-
-### S18 : Metrics reference
-
-**Type.** Official documentation
-
-**Audit note.** Prometheus metric inventory
-
-**URL.** https://aerospike.com/docs/graph/reference/metrics/
-
-
-### S19 : Query tracing
-
-**Type.** Official documentation
-
-**Audit note.** Zipkin tracing contract
-
-**URL.** https://aerospike.com/docs/graph/observe/query-tracing/
-
-
-### S27 : Architecture deep-dive blog
-
-**Type.** Vendor blog
-
-**Audit note.** Optimizer and record-model explanation
-
-**URL.** https://aerospike.com/blog/graphing-database-architecture/
-
-
-### S33 : AGS public source snapshot
-
-**Type.** Apache-2.0 source
-
-**Audit note.** 3.x-dev at ad0983e5519cbd3705f70113afd7df048c568045
-
-**URL.** https://github.com/aerospike/aerospike-graph-service/tree/ad0983e5519cbd3705f70113afd7df048c568045
-
-
-### S36 : AGS AerospikeOperations
-
-**Type.** Apache-2.0 source
-
-**Audit note.** Read/write and edge mutation pipeline
-
-**URL.** https://github.com/aerospike/aerospike-graph-service/blob/ad0983e5519cbd3705f70113afd7df048c568045/aerospike-graph-gremlin/src/main/java/com/aerospike/firefly/io/aerospike/AerospikeOperations.java
-
-
-### S37 : AGS configuration source
-
-**Type.** Apache-2.0 source
-
-**Audit note.** Code defaults and validators
-
-**URL.** https://github.com/aerospike/aerospike-graph-service/blob/ad0983e5519cbd3705f70113afd7df048c568045/aerospike-graph-gremlin/src/main/java/com/aerospike/firefly/util/config/ConfigurationHelper.java
-
-
-### S38 : AGS query code
-
-**Type.** Apache-2.0 source
-
-**Audit note.** Paged scans and secondary-index queries
-
-**URL.** https://github.com/aerospike/aerospike-graph-service/tree/ad0983e5519cbd3705f70113afd7df048c568045/aerospike-graph-gremlin/src/main/java/com/aerospike/firefly/io/aerospike/query
-
-
-### S39 : AGS traversal strategies
-
-**Type.** Apache-2.0 source
-
-**Audit note.** Rewrite implementations
-
-**URL.** https://github.com/aerospike/aerospike-graph-service/tree/ad0983e5519cbd3705f70113afd7df048c568045/aerospike-graph-gremlin/src/main/java/com/aerospike/firefly/process/traversal/strategy
-
-
-### S41 : AGS tests
-
-**Type.** Apache-2.0 source
-
-**Audit note.** 431 test files observed in snapshot
-
-**URL.** https://github.com/aerospike/aerospike-graph-service/tree/ad0983e5519cbd3705f70113afd7df048c568045/aerospike-graph-gremlin/src/test
-
-
-### S45 : Apache TinkerPop 3.7.3 reference
-
-**Type.** Upstream documentation
-
-**Audit note.** Language/runtime semantic oracle
-
-**URL.** https://tinkerpop.apache.org/docs/3.7.3/reference/
+<table>
+<thead>
+<tr>
+<th>ID</th>
+<th>Source</th>
+<th>Class</th>
+<th>Audit use</th>
+<th>Link</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>S09</td>
+<td>Architecture</td>
+<td>Official documentation</td>
+<td>Three-layer request path</td>
+<td>https://aerospike.com/docs/graph/overview/architecture/</td>
+</tr>
+<tr>
+<td>S11</td>
+<td>Indexing</td>
+<td>Official documentation</td>
+<td>Vertex index and scan controls</td>
+<td>https://aerospike.com/docs/graph/develop/query/indexing/</td>
+</tr>
+<tr>
+<td>S12</td>
+<td>Supernodes</td>
+<td>Official documentation</td>
+<td>Thresholds and filtered traversal guidance</td>
+<td>https://aerospike.com/docs/graph/develop/query/supernodes/</td>
+</tr>
+<tr>
+<td>S13</td>
+<td>Query threading</td>
+<td>Official documentation</td>
+<td>Per-query parallelization and batch/page controls</td>
+<td>https://aerospike.com/docs/graph/develop/query/query-threading/</td>
+</tr>
+<tr>
+<td>S14</td>
+<td>Cache management</td>
+<td>Official documentation</td>
+<td>Transactional and global record caches</td>
+<td>https://aerospike.com/docs/graph/manage/cache/</td>
+</tr>
+<tr>
+<td>S15</td>
+<td>Data types</td>
+<td>Official documentation</td>
+<td>Property and index type limitations</td>
+<td>https://aerospike.com/docs/graph/develop/query/data-type-support/</td>
+</tr>
+<tr>
+<td>S16</td>
+<td>TinkerPop feature support</td>
+<td>Official documentation</td>
+<td>Feature compatibility matrix</td>
+<td>https://aerospike.com/docs/graph/overview/tinkerpop/</td>
+</tr>
+<tr>
+<td>S17</td>
+<td>Configuration reference</td>
+<td>Official documentation</td>
+<td>AGS runtime knobs</td>
+<td>https://aerospike.com/docs/graph/reference/config/</td>
+</tr>
+<tr>
+<td>S18</td>
+<td>Metrics reference</td>
+<td>Official documentation</td>
+<td>Prometheus metric inventory</td>
+<td>https://aerospike.com/docs/graph/reference/metrics/</td>
+</tr>
+<tr>
+<td>S19</td>
+<td>Query tracing</td>
+<td>Official documentation</td>
+<td>Zipkin tracing contract</td>
+<td>https://aerospike.com/docs/graph/observe/query-tracing/</td>
+</tr>
+<tr>
+<td>S27</td>
+<td>Architecture deep-dive blog</td>
+<td>Vendor blog</td>
+<td>Optimizer and record-model explanation</td>
+<td>https://aerospike.com/blog/graphing-database-architecture/</td>
+</tr>
+<tr>
+<td>S33</td>
+<td>AGS public source snapshot</td>
+<td>Apache-2.0 source</td>
+<td>3.x-dev at ad0983e5519cbd3705f70113afd7df048c568045</td>
+<td>https://github.com/aerospike/aerospike-graph-service/tree/ad0983e5519cbd3705f70113afd7df048c568045</td>
+</tr>
+<tr>
+<td>S36</td>
+<td>AGS AerospikeOperations</td>
+<td>Apache-2.0 source</td>
+<td>Read/write and edge mutation pipeline</td>
+<td>https://github.com/aerospike/aerospike-graph-service/blob/ad0983e5519cbd3705f70113afd7df048c568045/aerospike-graph-gremlin/src/main/java/com/aerospike/firefly/io/aerospike/AerospikeOperations.java</td>
+</tr>
+<tr>
+<td>S37</td>
+<td>AGS configuration source</td>
+<td>Apache-2.0 source</td>
+<td>Code defaults and validators</td>
+<td>https://github.com/aerospike/aerospike-graph-service/blob/ad0983e5519cbd3705f70113afd7df048c568045/aerospike-graph-gremlin/src/main/java/com/aerospike/firefly/util/config/ConfigurationHelper.java</td>
+</tr>
+<tr>
+<td>S38</td>
+<td>AGS query code</td>
+<td>Apache-2.0 source</td>
+<td>Paged scans and secondary-index queries</td>
+<td>https://github.com/aerospike/aerospike-graph-service/tree/ad0983e5519cbd3705f70113afd7df048c568045/aerospike-graph-gremlin/src/main/java/com/aerospike/firefly/io/aerospike/query</td>
+</tr>
+<tr>
+<td>S39</td>
+<td>AGS traversal strategies</td>
+<td>Apache-2.0 source</td>
+<td>Rewrite implementations</td>
+<td>https://github.com/aerospike/aerospike-graph-service/tree/ad0983e5519cbd3705f70113afd7df048c568045/aerospike-graph-gremlin/src/main/java/com/aerospike/firefly/process/traversal/strategy</td>
+</tr>
+<tr>
+<td>S41</td>
+<td>AGS tests</td>
+<td>Apache-2.0 source</td>
+<td>431 test files observed in snapshot</td>
+<td>https://github.com/aerospike/aerospike-graph-service/tree/ad0983e5519cbd3705f70113afd7df048c568045/aerospike-graph-gremlin/src/test</td>
+</tr>
+
+<tr>
+<td>S45</td>
+<td>Apache TinkerPop 3.7.3 reference</td>
+<td>Upstream documentation</td>
+<td>Language/runtime semantic oracle</td>
+<td>https://tinkerpop.apache.org/docs/3.7.3/reference/</td>
+</tr>
+</tbody>
+</table>

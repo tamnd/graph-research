@@ -124,564 +124,554 @@ Maximum Aerospike record size constrains inline adjacency and packed-record risk
 
 ## Record-model qualification cases
 
+### What edge packing changes in practice
+
+The storage record for an edge is selected from its packing ID rather than from
+the user-visible edge identity alone. The critical source expression is only
+one line:
+
+```java
+return Math.floorDiv(packingId, phatEdgeSize);
+```
+
+It appears in the pinned
+[`FireflyPhatEdgeId.java`](https://github.com/aerospike/aerospike-graph-service/blob/ad0983e5519cbd3705f70113afd7df048c568045/aerospike-graph-gremlin/src/main/java/com/aerospike/firefly/structure/id/FireflyPhatEdgeId.java).
+The result is the Database record key for a pack. With a pack size of ten,
+packing IDs zero through nine share one record, ten through nineteen share the
+next, and so on. A point read of one edge may therefore fetch nearby logical
+edges, which is useful when traversal consumes several of them. A property
+update also rewrites the shared record, which means edge packing trades index
+and command efficiency for a larger contention and write-amplification domain.
+The correct pack size depends on mutation rate, edge property width, adjacency
+locality, record-size limits, and the ratio of point to batch reads.
+
+The endpoint vertex records create a second representation of connectivity.
+For ordinary vertices, inbound and outbound adjacency maps hold the edge
+identity and the opposing vertex identity. That cache lets an `out()` or `in()`
+shape move directly toward vertices when no edge projection is required. It
+also means that adding or deleting one logical relationship involves more than
+the packed edge record. Without MRT, source ordering and existence checks are
+used to keep partial adjacency from becoming a visible edge. With MRT, the edge
+record and endpoint mutations can participate in one Database transaction, but
+the pack is also a transaction conflict unit. Record count alone therefore
+understates both the write path and the correctness work.
+
+Supernodes are not merely large ordinary vertices. Once the marker flips, AGS
+uses specialized edge-record structures and secondary indexes to find incident
+edges. The transition is intentionally one way, so a benchmark that loads a
+high-degree vertex and later deletes most of its edges does not return to the
+ordinary inline path. Degree buckets immediately below and above the configured
+threshold must be separate benchmark cells. Filtered and unfiltered supernode
+queries also belong in separate cells because server-side label or property
+rejection can change the number of edge records and endpoint vertices that must
+be materialized.
+
+| Physical concern | Ordinary vertex path | Supernode path | Measurement needed |
+| --- | --- | --- | --- |
+| Adjacency location | Vertex record maps | Specialized edge records located by secondary index | Commands, records, bytes, and index pages per hop |
+| Edge grouping | Shared packed edge record | Shared records plus supernode indexing | Collision rate and bytes rewritten per mutation |
+| Direction lookup | Inline inbound or outbound map | Direction included in specialized query keys | Forward and reverse p99 by degree |
+| State transition | Inline until threshold | One-way after marker is set | Latency and storage immediately around threshold |
+| Delete behavior | Endpoint and packed-record cleanup | Best-effort large cleanup with separate risks | Orphans, completion time, retries, and post-audit |
+| Capacity pressure | One vertex primary-index entry plus packed edges | Additional secondary-index state and query load | PI RAM, SI RAM, device bytes, and query-thread use |
+
 Each storage case begins with the same raw-record procedure. Pin the AGS and Database artifacts, load only the records needed for the case, capture namespace and set statistics, export or inspect the affected records, perform one mutation, and capture the records again. The inspection records command counts, record generations, logical and physical sizes, primary and secondary index memory, device bytes, and defragmentation work.
 
 The semantic oracle verifies ID type, labels, parallel-edge identity, property values, direction, adjacency visibility, and state after restart. A hidden scan, unexpected record fan-out, stranded adjacency, pack collision, unsupported type, or mismatch between the source model and shipped image is reported directly. Nothing in this catalog has a measured result unless a linked artifact says so.
 
-### Q001 : storage: vertex key Long
-
-**Purpose.** Verify stable user ID round trip and digest derivation.
-
-**Evidence anchors.** S11,S12,S15,S33–S44
-
-
-### Q002 : storage: vertex key Integer
-
-**Purpose.** Verify type preservation rather than numeric coercion.
-
-**Evidence anchors.** S11,S12,S15,S33–S44
-
-
-### Q003 : storage: vertex key String
-
-**Purpose.** Measure digest/key memory and collision handling.
-
-**Evidence anchors.** S11,S12,S15,S33–S44
-
-
-### Q004 : storage: generated vertex ID
-
-**Purpose.** Measure buffered decrementing allocation and crash gaps.
-
-**Evidence anchors.** S11,S12,S15,S33–S44
-
-
-### Q005 : storage: schema first label
-
-**Purpose.** Observe atomic intern assignment under concurrency.
-
-**Evidence anchors.** S11,S12,S15,S33–S44
-
-
-### Q006 : storage: schema repeated label
-
-**Purpose.** Confirm cache hit and no counter increment.
-
-**Evidence anchors.** S11,S12,S15,S33–S44
-
-
-### Q007 : storage: schema concurrent new key
-
-**Purpose.** Prove a single permanent interned ID.
-
-**Evidence anchors.** S11,S12,S15,S33–S44
-
-
-### Q008 : storage: schema restart
-
-**Purpose.** Rebuild in-memory maps from records without remapping.
-
-**Evidence anchors.** S11,S12,S15,S33–S44
-
-
-### Q009 : storage: single vertex property
-
-**Purpose.** Inspect VP_DATA and type-hint encoding.
-
-**Evidence anchors.** S11,S12,S15,S33–S44
-
-
-### Q010 : storage: list cardinality
-
-**Purpose.** Inspect multiple property IDs and meta-property behavior.
-
-**Evidence anchors.** S11,S12,S15,S33–S44
-
-
-### Q011 : storage: set cardinality
-
-**Purpose.** Qualify 3.2 semantics for equality and type mixing.
-
-**Evidence anchors.** S11,S12,S15,S33–S44
-
-
-### Q012 : storage: meta-property spill
-
-**Purpose.** Trigger IN_VP/OUT_VP and measure extra I/O.
-
-**Evidence anchors.** S11,S12,S15,S33–S44
-
-
-### Q013 : storage: datetime property
-
-**Purpose.** Prove source/storage/client round trip and indexed range.
-
-**Evidence anchors.** S11,S12,S15,S33–S44
-
-
-### Q014 : storage: double property
-
-**Purpose.** Confirm no index path and exact comparison behavior.
-
-**Evidence anchors.** S11,S12,S15,S33–S44
-
-
-### Q015 : storage: scaled long
-
-**Purpose.** Compare indexed range path with Double scan path.
-
-**Evidence anchors.** S11,S12,S15,S33–S44
-
-
-### Q016 : storage: normal edge add
-
-**Purpose.** Count edge-record and both vertex-record operations.
-
-**Evidence anchors.** S11,S12,S15,S33–S44
-
-
-### Q017 : storage: self-loop add
-
-**Purpose.** Detect duplicate endpoint operations and path semantics.
-
-**Evidence anchors.** S11,S12,S15,S33–S44
-
-
-### Q018 : storage: parallel edges
-
-**Purpose.** Preserve distinct edge IDs and properties.
-
-**Evidence anchors.** S11,S12,S15,S33–S44
-
-
-### Q019 : storage: edge property update
-
-**Purpose.** Measure packed-record contention and byte rewrite.
-
-**Evidence anchors.** S11,S12,S15,S33–S44
-
-
-### Q020 : storage: edge delete
-
-**Purpose.** Verify record-first visibility and adjacency cleanup.
-
-**Evidence anchors.** S11,S12,S15,S33–S44
-
-
-### Q021 : storage: pack size 1
-
-**Purpose.** Establish record-count and contention baseline.
-
-**Evidence anchors.** S11,S12,S15,S33–S44
-
-
-### Q022 : storage: pack size 10
-
-**Purpose.** Qualify source default under mixed reads/writes.
-
-**Evidence anchors.** S11,S12,S15,S33–S44
-
-
-### Q023 : storage: pack size 100
-
-**Purpose.** Expose large-record reads and writer collision tradeoff.
-
-**Evidence anchors.** S11,S12,S15,S33–S44
-
-
-### Q024 : storage: pack immutability
-
-**Purpose.** Reject runtime pack-size change on existing data.
-
-**Evidence anchors.** S11,S12,S15,S33–S44
-
-
-### Q025 : storage: pack partial occupancy
-
-**Purpose.** Measure waste under random deletes and recycled IDs.
-
-**Evidence anchors.** S11,S12,S15,S33–S44
-
-
-### Q026 : storage: packing collision
-
-**Purpose.** Force concurrent writes to one packed record.
-
-**Evidence anchors.** S11,S12,S15,S33–S44
-
-
-### Q027 : storage: recycled edge ID
-
-**Purpose.** Verify 16-byte identity and no alias with deleted edge.
-
-**Evidence anchors.** S11,S12,S15,S33–S44
-
-
-### Q028 : storage: allocator crash gap
-
-**Purpose.** Prove gaps do not become identity reuse.
-
-**Evidence anchors.** S11,S12,S15,S33–S44
-
-
-### Q029 : storage: ordinary adjacency degree 1
-
-**Purpose.** Establish minimum hop I/O.
-
-**Evidence anchors.** S11,S12,S15,S33–S44
-
-
-### Q030 : storage: ordinary adjacency degree 100
-
-**Purpose.** Measure batch grouping and response materialization.
-
-**Evidence anchors.** S11,S12,S15,S33–S44
-
-
-### Q031 : storage: ordinary adjacency near threshold
-
-**Purpose.** Expose record-size and update tail latency.
-
-**Evidence anchors.** S11,S12,S15,S33–S44
-
-
-### Q032 : storage: automatic supernode transition
-
-**Purpose.** Verify irreversible ECACHE_OFF change.
-
-**Evidence anchors.** S11,S12,S15,S33–S44
-
-
-### Q033 : storage: manual supernode flag
-
-**Purpose.** Avoid populating adjacency that will be abandoned.
-
-**Evidence anchors.** S11,S12,S15,S33–S44
-
-
-### Q034 : storage: supernode inbound
-
-**Purpose.** Trace E_IN secondary-index query and filters.
-
-**Evidence anchors.** S11,S12,S15,S33–S44
-
-
-### Q035 : storage: supernode outbound
-
-**Purpose.** Trace E_OUT secondary-index query and filters.
-
-**Evidence anchors.** S11,S12,S15,S33–S44
-
-
-### Q036 : storage: supernode both
-
-**Purpose.** Measure two index streams, deduplication, and self-loops.
-
-**Evidence anchors.** S11,S12,S15,S33–S44
-
-
-### Q037 : storage: supernode property pushdown
-
-**Purpose.** Count records/edges eliminated server-side.
-
-**Evidence anchors.** S11,S12,S15,S33–S44
-
-
-### Q038 : storage: unfiltered supernode
-
-**Purpose.** Capture worst-case transfer and memory.
-
-**Evidence anchors.** S11,S12,S15,S33–S44
-
-
-### Q039 : storage: vertex max-record-size 128KiB
-
-**Purpose.** Validate documented ~800-edge transition estimate.
-
-**Evidence anchors.** S11,S12,S15,S33–S44
-
-
-### Q040 : storage: vertex max-record-size 1MiB
-
-**Purpose.** Validate documented ~6,500-edge transition estimate.
-
-**Evidence anchors.** S11,S12,S15,S33–S44
-
-
-### Q041 : storage: vertex max-record-size 8MiB memory
-
-**Purpose.** Validate documented ~50,000-edge transition estimate.
-
-**Evidence anchors.** S11,S12,S15,S33–S44
-
-
-### Q042 : storage: record-size exceed
-
-**Purpose.** Verify error mapping and absence of partial visible edge.
-
-**Evidence anchors.** S11,S12,S15,S33–S44
-
-
-### Q043 : storage: vertex label index
-
-**Purpose.** Inspect numeric interned label index path.
-
-**Evidence anchors.** S11,S12,S15,S33–S44
-
-
-### Q044 : storage: vertex string property index
-
-**Purpose.** Verify full-string equality only.
-
-**Evidence anchors.** S11,S12,S15,S33–S44
-
-
-### Q045 : storage: vertex numeric property index
-
-**Purpose.** Verify range bounds and type matching.
-
-**Evidence anchors.** S11,S12,S15,S33–S44
-
-
-### Q046 : storage: compound expression index
-
-**Purpose.** Qualify exact predicate coverage and fallback.
-
-**Evidence anchors.** S11,S12,S15,S33–S44
-
-
-### Q047 : storage: edge label global lookup
-
-**Purpose.** Prove scan fallback and disable-scan rejection.
-
-**Evidence anchors.** S11,S12,S15,S33–S44
-
-
-### Q048 : storage: edge property global lookup
-
-**Purpose.** Prove lack of general secondary index.
-
-**Evidence anchors.** S11,S12,S15,S33–S44
-
-
-### Q049 : storage: TTL vertex
-
-**Purpose.** Trace index, sweeper, incident-edge cleanup, and lag.
-
-**Evidence anchors.** S11,S12,S15,S33–S44
-
-
-### Q050 : storage: TTL edge
-
-**Purpose.** Trace per-edge TTL map and packed-record cleanup.
-
-**Evidence anchors.** S11,S12,S15,S33–S44
-
-
-### Q051 : storage: data-model major mismatch
-
-**Purpose.** Prove startup refuses incompatible on-disk major.
-
-**Evidence anchors.** S11,S12,S15,S33–S44
-
-
-### Q052 : storage: data-model newer minor
-
-**Purpose.** Prove older service refuses newer disk minor.
-
-**Evidence anchors.** S11,S12,S15,S33–S44
-
-
-### Q053 : storage: data-model rolling minor
-
-**Purpose.** Prove newer service reads older disk minor.
-
-**Evidence anchors.** S11,S12,S15,S33–S44
-
-
-### Q054 : storage: backup record reconstruction
-
-**Purpose.** Validate all sets, bins, indexes, and metadata after restore.
-
-**Evidence anchors.** S11,S12,S15,S33–S44
-
-
-### Q055 : storage: database partition migration
-
-**Purpose.** Validate record availability and traversal completeness during rebalance.
-
-**Evidence anchors.** S11,S12,S15,S33–S44
-
-
-### Q056 : storage: primary-index RAM
-
-**Purpose.** Measure bytes per vertex and packed edge record at scale.
-
-**Evidence anchors.** S11,S12,S15,S33–S44
-
-
-### Q057 : storage: secondary-index RAM
-
-**Purpose.** Measure per-entry cost for labels, properties, TTL, and supernodes.
-
-**Evidence anchors.** S11,S12,S15,S33–S44
-
-
-### Q058 : storage: defrag amplification
-
-**Purpose.** Measure device writes after churn in packed records.
-
-**Evidence anchors.** S11,S12,S15,S33–S44
-
-
-### Q059 : storage: compression
-
-**Purpose.** Measure CPU/latency/storage tradeoff where licensed/supported.
-
-**Evidence anchors.** S11,S12,S15,S33–S44
-
-
-### Q060 : storage: namespace storage engine
-
-**Purpose.** Compare HMA, memory, and all-flash without conflating modes.
-
-**Evidence anchors.** S11,S12,S15,S33–S44
-
+<table>
+<thead>
+<tr>
+<th>Case</th>
+<th>Subject</th>
+<th>Engineering question</th>
+<th>Evidence</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Q001</td>
+<td>storage: vertex key Long</td>
+<td>Verify stable user ID round trip and digest derivation.</td>
+<td>S11,S12,S15,S33–S44</td>
+</tr>
+<tr>
+<td>Q002</td>
+<td>storage: vertex key Integer</td>
+<td>Verify type preservation rather than numeric coercion.</td>
+<td>S11,S12,S15,S33–S44</td>
+</tr>
+<tr>
+<td>Q003</td>
+<td>storage: vertex key String</td>
+<td>Measure digest/key memory and collision handling.</td>
+<td>S11,S12,S15,S33–S44</td>
+</tr>
+<tr>
+<td>Q004</td>
+<td>storage: generated vertex ID</td>
+<td>Measure buffered decrementing allocation and crash gaps.</td>
+<td>S11,S12,S15,S33–S44</td>
+</tr>
+<tr>
+<td>Q005</td>
+<td>storage: schema first label</td>
+<td>Observe atomic intern assignment under concurrency.</td>
+<td>S11,S12,S15,S33–S44</td>
+</tr>
+<tr>
+<td>Q006</td>
+<td>storage: schema repeated label</td>
+<td>Confirm cache hit and no counter increment.</td>
+<td>S11,S12,S15,S33–S44</td>
+</tr>
+<tr>
+<td>Q007</td>
+<td>storage: schema concurrent new key</td>
+<td>Prove a single permanent interned ID.</td>
+<td>S11,S12,S15,S33–S44</td>
+</tr>
+<tr>
+<td>Q008</td>
+<td>storage: schema restart</td>
+<td>Rebuild in-memory maps from records without remapping.</td>
+<td>S11,S12,S15,S33–S44</td>
+</tr>
+<tr>
+<td>Q009</td>
+<td>storage: single vertex property</td>
+<td>Inspect VP_DATA and type-hint encoding.</td>
+<td>S11,S12,S15,S33–S44</td>
+</tr>
+<tr>
+<td>Q010</td>
+<td>storage: list cardinality</td>
+<td>Inspect multiple property IDs and meta-property behavior.</td>
+<td>S11,S12,S15,S33–S44</td>
+</tr>
+<tr>
+<td>Q011</td>
+<td>storage: set cardinality</td>
+<td>Qualify 3.2 semantics for equality and type mixing.</td>
+<td>S11,S12,S15,S33–S44</td>
+</tr>
+<tr>
+<td>Q012</td>
+<td>storage: meta-property spill</td>
+<td>Trigger IN_VP/OUT_VP and measure extra I/O.</td>
+<td>S11,S12,S15,S33–S44</td>
+</tr>
+<tr>
+<td>Q013</td>
+<td>storage: datetime property</td>
+<td>Prove source/storage/client round trip and indexed range.</td>
+<td>S11,S12,S15,S33–S44</td>
+</tr>
+<tr>
+<td>Q014</td>
+<td>storage: double property</td>
+<td>Confirm no index path and exact comparison behavior.</td>
+<td>S11,S12,S15,S33–S44</td>
+</tr>
+<tr>
+<td>Q015</td>
+<td>storage: scaled long</td>
+<td>Compare indexed range path with Double scan path.</td>
+<td>S11,S12,S15,S33–S44</td>
+</tr>
+<tr>
+<td>Q016</td>
+<td>storage: normal edge add</td>
+<td>Count edge-record and both vertex-record operations.</td>
+<td>S11,S12,S15,S33–S44</td>
+</tr>
+<tr>
+<td>Q017</td>
+<td>storage: self-loop add</td>
+<td>Detect duplicate endpoint operations and path semantics.</td>
+<td>S11,S12,S15,S33–S44</td>
+</tr>
+<tr>
+<td>Q018</td>
+<td>storage: parallel edges</td>
+<td>Preserve distinct edge IDs and properties.</td>
+<td>S11,S12,S15,S33–S44</td>
+</tr>
+<tr>
+<td>Q019</td>
+<td>storage: edge property update</td>
+<td>Measure packed-record contention and byte rewrite.</td>
+<td>S11,S12,S15,S33–S44</td>
+</tr>
+<tr>
+<td>Q020</td>
+<td>storage: edge delete</td>
+<td>Verify record-first visibility and adjacency cleanup.</td>
+<td>S11,S12,S15,S33–S44</td>
+</tr>
+<tr>
+<td>Q021</td>
+<td>storage: pack size 1</td>
+<td>Establish record-count and contention baseline.</td>
+<td>S11,S12,S15,S33–S44</td>
+</tr>
+<tr>
+<td>Q022</td>
+<td>storage: pack size 10</td>
+<td>Qualify source default under mixed reads/writes.</td>
+<td>S11,S12,S15,S33–S44</td>
+</tr>
+<tr>
+<td>Q023</td>
+<td>storage: pack size 100</td>
+<td>Expose large-record reads and writer collision tradeoff.</td>
+<td>S11,S12,S15,S33–S44</td>
+</tr>
+<tr>
+<td>Q024</td>
+<td>storage: pack immutability</td>
+<td>Reject runtime pack-size change on existing data.</td>
+<td>S11,S12,S15,S33–S44</td>
+</tr>
+<tr>
+<td>Q025</td>
+<td>storage: pack partial occupancy</td>
+<td>Measure waste under random deletes and recycled IDs.</td>
+<td>S11,S12,S15,S33–S44</td>
+</tr>
+<tr>
+<td>Q026</td>
+<td>storage: packing collision</td>
+<td>Force concurrent writes to one packed record.</td>
+<td>S11,S12,S15,S33–S44</td>
+</tr>
+<tr>
+<td>Q027</td>
+<td>storage: recycled edge ID</td>
+<td>Verify 16-byte identity and no alias with deleted edge.</td>
+<td>S11,S12,S15,S33–S44</td>
+</tr>
+<tr>
+<td>Q028</td>
+<td>storage: allocator crash gap</td>
+<td>Prove gaps do not become identity reuse.</td>
+<td>S11,S12,S15,S33–S44</td>
+</tr>
+<tr>
+<td>Q029</td>
+<td>storage: ordinary adjacency degree 1</td>
+<td>Establish minimum hop I/O.</td>
+<td>S11,S12,S15,S33–S44</td>
+</tr>
+<tr>
+<td>Q030</td>
+<td>storage: ordinary adjacency degree 100</td>
+<td>Measure batch grouping and response materialization.</td>
+<td>S11,S12,S15,S33–S44</td>
+</tr>
+<tr>
+<td>Q031</td>
+<td>storage: ordinary adjacency near threshold</td>
+<td>Expose record-size and update tail latency.</td>
+<td>S11,S12,S15,S33–S44</td>
+</tr>
+<tr>
+<td>Q032</td>
+<td>storage: automatic supernode transition</td>
+<td>Verify irreversible ECACHE_OFF change.</td>
+<td>S11,S12,S15,S33–S44</td>
+</tr>
+<tr>
+<td>Q033</td>
+<td>storage: manual supernode flag</td>
+<td>Avoid populating adjacency that will be abandoned.</td>
+<td>S11,S12,S15,S33–S44</td>
+</tr>
+<tr>
+<td>Q034</td>
+<td>storage: supernode inbound</td>
+<td>Trace E_IN secondary-index query and filters.</td>
+<td>S11,S12,S15,S33–S44</td>
+</tr>
+<tr>
+<td>Q035</td>
+<td>storage: supernode outbound</td>
+<td>Trace E_OUT secondary-index query and filters.</td>
+<td>S11,S12,S15,S33–S44</td>
+</tr>
+<tr>
+<td>Q036</td>
+<td>storage: supernode both</td>
+<td>Measure two index streams, deduplication, and self-loops.</td>
+<td>S11,S12,S15,S33–S44</td>
+</tr>
+<tr>
+<td>Q037</td>
+<td>storage: supernode property pushdown</td>
+<td>Count records/edges eliminated server-side.</td>
+<td>S11,S12,S15,S33–S44</td>
+</tr>
+<tr>
+<td>Q038</td>
+<td>storage: unfiltered supernode</td>
+<td>Capture worst-case transfer and memory.</td>
+<td>S11,S12,S15,S33–S44</td>
+</tr>
+<tr>
+<td>Q039</td>
+<td>storage: vertex max-record-size 128KiB</td>
+<td>Validate documented ~800-edge transition estimate.</td>
+<td>S11,S12,S15,S33–S44</td>
+</tr>
+<tr>
+<td>Q040</td>
+<td>storage: vertex max-record-size 1MiB</td>
+<td>Validate documented ~6,500-edge transition estimate.</td>
+<td>S11,S12,S15,S33–S44</td>
+</tr>
+<tr>
+<td>Q041</td>
+<td>storage: vertex max-record-size 8MiB memory</td>
+<td>Validate documented ~50,000-edge transition estimate.</td>
+<td>S11,S12,S15,S33–S44</td>
+</tr>
+<tr>
+<td>Q042</td>
+<td>storage: record-size exceed</td>
+<td>Verify error mapping and absence of partial visible edge.</td>
+<td>S11,S12,S15,S33–S44</td>
+</tr>
+<tr>
+<td>Q043</td>
+<td>storage: vertex label index</td>
+<td>Inspect numeric interned label index path.</td>
+<td>S11,S12,S15,S33–S44</td>
+</tr>
+<tr>
+<td>Q044</td>
+<td>storage: vertex string property index</td>
+<td>Verify full-string equality only.</td>
+<td>S11,S12,S15,S33–S44</td>
+</tr>
+<tr>
+<td>Q045</td>
+<td>storage: vertex numeric property index</td>
+<td>Verify range bounds and type matching.</td>
+<td>S11,S12,S15,S33–S44</td>
+</tr>
+<tr>
+<td>Q046</td>
+<td>storage: compound expression index</td>
+<td>Qualify exact predicate coverage and fallback.</td>
+<td>S11,S12,S15,S33–S44</td>
+</tr>
+<tr>
+<td>Q047</td>
+<td>storage: edge label global lookup</td>
+<td>Prove scan fallback and disable-scan rejection.</td>
+<td>S11,S12,S15,S33–S44</td>
+</tr>
+<tr>
+<td>Q048</td>
+<td>storage: edge property global lookup</td>
+<td>Prove lack of general secondary index.</td>
+<td>S11,S12,S15,S33–S44</td>
+</tr>
+<tr>
+<td>Q049</td>
+<td>storage: TTL vertex</td>
+<td>Trace index, sweeper, incident-edge cleanup, and lag.</td>
+<td>S11,S12,S15,S33–S44</td>
+</tr>
+<tr>
+<td>Q050</td>
+<td>storage: TTL edge</td>
+<td>Trace per-edge TTL map and packed-record cleanup.</td>
+<td>S11,S12,S15,S33–S44</td>
+</tr>
+<tr>
+<td>Q051</td>
+<td>storage: data-model major mismatch</td>
+<td>Prove startup refuses incompatible on-disk major.</td>
+<td>S11,S12,S15,S33–S44</td>
+</tr>
+<tr>
+<td>Q052</td>
+<td>storage: data-model newer minor</td>
+<td>Prove older service refuses newer disk minor.</td>
+<td>S11,S12,S15,S33–S44</td>
+</tr>
+<tr>
+<td>Q053</td>
+<td>storage: data-model rolling minor</td>
+<td>Prove newer service reads older disk minor.</td>
+<td>S11,S12,S15,S33–S44</td>
+</tr>
+<tr>
+<td>Q054</td>
+<td>storage: backup record reconstruction</td>
+<td>Validate all sets, bins, indexes, and metadata after restore.</td>
+<td>S11,S12,S15,S33–S44</td>
+</tr>
+<tr>
+<td>Q055</td>
+<td>storage: database partition migration</td>
+<td>Validate record availability and traversal completeness during rebalance.</td>
+<td>S11,S12,S15,S33–S44</td>
+</tr>
+<tr>
+<td>Q056</td>
+<td>storage: primary-index RAM</td>
+<td>Measure bytes per vertex and packed edge record at scale.</td>
+<td>S11,S12,S15,S33–S44</td>
+</tr>
+<tr>
+<td>Q057</td>
+<td>storage: secondary-index RAM</td>
+<td>Measure per-entry cost for labels, properties, TTL, and supernodes.</td>
+<td>S11,S12,S15,S33–S44</td>
+</tr>
+<tr>
+<td>Q058</td>
+<td>storage: defrag amplification</td>
+<td>Measure device writes after churn in packed records.</td>
+<td>S11,S12,S15,S33–S44</td>
+</tr>
+<tr>
+<td>Q059</td>
+<td>storage: compression</td>
+<td>Measure CPU/latency/storage tradeoff where licensed/supported.</td>
+<td>S11,S12,S15,S33–S44</td>
+</tr>
+<tr>
+<td>Q060</td>
+<td>storage: namespace storage engine</td>
+<td>Compare HMA, memory, and all-flash without conflating modes.</td>
+<td>S11,S12,S15,S33–S44</td>
+</tr>
+</tbody>
+</table>
 
 ## Source register
 
 The retrieval date for web sources is the research cut. Git sources are pinned by commit. A source being official establishes what was stated or implemented; it does not independently establish a performance claim.
 
-### S11 : Indexing
-
-**Type.** Official documentation
-
-**Audit note.** Vertex index and scan controls
-
-**URL.** https://aerospike.com/docs/graph/develop/query/indexing/
-
-
-### S12 : Supernodes
-
-**Type.** Official documentation
-
-**Audit note.** Thresholds and filtered traversal guidance
-
-**URL.** https://aerospike.com/docs/graph/develop/query/supernodes/
-
-
-### S15 : Data types
-
-**Type.** Official documentation
-
-**Audit note.** Property and index type limitations
-
-**URL.** https://aerospike.com/docs/graph/develop/query/data-type-support/
-
-
-### S31 : Database storage configuration
-
-**Type.** Official documentation
-
-**Audit note.** Memory, device, and persistence modes
-
-**URL.** https://aerospike.com/docs/database/manage/namespace/storage/config/
-
-
-### S33 : AGS public source snapshot
-
-**Type.** Apache-2.0 source
-
-**Audit note.** 3.x-dev at ad0983e5519cbd3705f70113afd7df048c568045
-
-**URL.** https://github.com/aerospike/aerospike-graph-service/tree/ad0983e5519cbd3705f70113afd7df048c568045
-
-
-### S34 : AGS data model design
-
-**Type.** Apache-2.0 source documentation
-
-**Audit note.** Packed record layout
-
-**URL.** https://github.com/aerospike/aerospike-graph-service/blob/ad0983e5519cbd3705f70113afd7df048c568045/docs/DATA_MODEL_DESIGN.md
-
-
-### S35 : AGS architecture source map
-
-**Type.** Apache-2.0 source documentation
-
-**Audit note.** Modules and entry points
-
-**URL.** https://github.com/aerospike/aerospike-graph-service/blob/ad0983e5519cbd3705f70113afd7df048c568045/docs/ARCHITECTURE.md
-
-
-### S36 : AGS AerospikeOperations
-
-**Type.** Apache-2.0 source
-
-**Audit note.** Read/write and edge mutation pipeline
-
-**URL.** https://github.com/aerospike/aerospike-graph-service/blob/ad0983e5519cbd3705f70113afd7df048c568045/aerospike-graph-gremlin/src/main/java/com/aerospike/firefly/io/aerospike/AerospikeOperations.java
-
-
-### S37 : AGS configuration source
-
-**Type.** Apache-2.0 source
-
-**Audit note.** Code defaults and validators
-
-**URL.** https://github.com/aerospike/aerospike-graph-service/blob/ad0983e5519cbd3705f70113afd7df048c568045/aerospike-graph-gremlin/src/main/java/com/aerospike/firefly/util/config/ConfigurationHelper.java
-
-
-### S38 : AGS query code
-
-**Type.** Apache-2.0 source
-
-**Audit note.** Paged scans and secondary-index queries
-
-**URL.** https://github.com/aerospike/aerospike-graph-service/tree/ad0983e5519cbd3705f70113afd7df048c568045/aerospike-graph-gremlin/src/main/java/com/aerospike/firefly/io/aerospike/query
-
-
-### S39 : AGS traversal strategies
-
-**Type.** Apache-2.0 source
-
-**Audit note.** Rewrite implementations
-
-**URL.** https://github.com/aerospike/aerospike-graph-service/tree/ad0983e5519cbd3705f70113afd7df048c568045/aerospike-graph-gremlin/src/main/java/com/aerospike/firefly/process/traversal/strategy
-
-
-### S40 : AGS transaction implementation
-
-**Type.** Apache-2.0 source
-
-**Audit note.** TinkerPop transaction wrapper
-
-**URL.** https://github.com/aerospike/aerospike-graph-service/blob/ad0983e5519cbd3705f70113afd7df048c568045/aerospike-graph-gremlin/src/main/java/com/aerospike/firefly/structure/transaction/FireflyTransaction.java
-
-
-### S41 : AGS tests
-
-**Type.** Apache-2.0 source
-
-**Audit note.** 431 test files observed in snapshot
-
-**URL.** https://github.com/aerospike/aerospike-graph-service/tree/ad0983e5519cbd3705f70113afd7df048c568045/aerospike-graph-gremlin/src/test
-
-
-### S43 : Database server source snapshot
-
-**Type.** AGPL/community core source
-
-**Audit note.** Server at 3c13b0de02f5ccaa6fffd8b9bbf3387b0c6a12dc
-
-**URL.** https://github.com/aerospike/aerospike-server/tree/3c13b0de02f5ccaa6fffd8b9bbf3387b0c6a12dc
-
-
-### S44 : Java client source snapshot
-
-**Type.** Apache-2.0 source
-
-**Audit note.** Client at 9d1f99a66f6590a3c489f6b0dd1589adcb8a1c12
-
-**URL.** https://github.com/aerospike/aerospike-client-java/tree/9d1f99a66f6590a3c489f6b0dd1589adcb8a1c12
+<table>
+<thead>
+<tr>
+<th>ID</th>
+<th>Source</th>
+<th>Class</th>
+<th>Audit use</th>
+<th>Link</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>S11</td>
+<td>Indexing</td>
+<td>Official documentation</td>
+<td>Vertex index and scan controls</td>
+<td>https://aerospike.com/docs/graph/develop/query/indexing/</td>
+</tr>
+<tr>
+<td>S12</td>
+<td>Supernodes</td>
+<td>Official documentation</td>
+<td>Thresholds and filtered traversal guidance</td>
+<td>https://aerospike.com/docs/graph/develop/query/supernodes/</td>
+</tr>
+<tr>
+<td>S15</td>
+<td>Data types</td>
+<td>Official documentation</td>
+<td>Property and index type limitations</td>
+<td>https://aerospike.com/docs/graph/develop/query/data-type-support/</td>
+</tr>
+<tr>
+<td>S31</td>
+<td>Database storage configuration</td>
+<td>Official documentation</td>
+<td>Memory, device, and persistence modes</td>
+<td>https://aerospike.com/docs/database/manage/namespace/storage/config/</td>
+</tr>
+<tr>
+<td>S33</td>
+<td>AGS public source snapshot</td>
+<td>Apache-2.0 source</td>
+<td>3.x-dev at ad0983e5519cbd3705f70113afd7df048c568045</td>
+<td>https://github.com/aerospike/aerospike-graph-service/tree/ad0983e5519cbd3705f70113afd7df048c568045</td>
+</tr>
+<tr>
+<td>S34</td>
+<td>AGS data model design</td>
+<td>Apache-2.0 source documentation</td>
+<td>Packed record layout</td>
+<td>https://github.com/aerospike/aerospike-graph-service/blob/ad0983e5519cbd3705f70113afd7df048c568045/docs/DATA_MODEL_DESIGN.md</td>
+</tr>
+<tr>
+<td>S35</td>
+<td>AGS architecture source map</td>
+<td>Apache-2.0 source documentation</td>
+<td>Modules and entry points</td>
+<td>https://github.com/aerospike/aerospike-graph-service/blob/ad0983e5519cbd3705f70113afd7df048c568045/docs/ARCHITECTURE.md</td>
+</tr>
+<tr>
+<td>S36</td>
+<td>AGS AerospikeOperations</td>
+<td>Apache-2.0 source</td>
+<td>Read/write and edge mutation pipeline</td>
+<td>https://github.com/aerospike/aerospike-graph-service/blob/ad0983e5519cbd3705f70113afd7df048c568045/aerospike-graph-gremlin/src/main/java/com/aerospike/firefly/io/aerospike/AerospikeOperations.java</td>
+</tr>
+<tr>
+<td>S37</td>
+<td>AGS configuration source</td>
+<td>Apache-2.0 source</td>
+<td>Code defaults and validators</td>
+<td>https://github.com/aerospike/aerospike-graph-service/blob/ad0983e5519cbd3705f70113afd7df048c568045/aerospike-graph-gremlin/src/main/java/com/aerospike/firefly/util/config/ConfigurationHelper.java</td>
+</tr>
+<tr>
+<td>S38</td>
+<td>AGS query code</td>
+<td>Apache-2.0 source</td>
+<td>Paged scans and secondary-index queries</td>
+<td>https://github.com/aerospike/aerospike-graph-service/tree/ad0983e5519cbd3705f70113afd7df048c568045/aerospike-graph-gremlin/src/main/java/com/aerospike/firefly/io/aerospike/query</td>
+</tr>
+<tr>
+<td>S39</td>
+<td>AGS traversal strategies</td>
+<td>Apache-2.0 source</td>
+<td>Rewrite implementations</td>
+<td>https://github.com/aerospike/aerospike-graph-service/tree/ad0983e5519cbd3705f70113afd7df048c568045/aerospike-graph-gremlin/src/main/java/com/aerospike/firefly/process/traversal/strategy</td>
+</tr>
+<tr>
+<td>S40</td>
+<td>AGS transaction implementation</td>
+<td>Apache-2.0 source</td>
+<td>TinkerPop transaction wrapper</td>
+<td>https://github.com/aerospike/aerospike-graph-service/blob/ad0983e5519cbd3705f70113afd7df048c568045/aerospike-graph-gremlin/src/main/java/com/aerospike/firefly/structure/transaction/FireflyTransaction.java</td>
+</tr>
+<tr>
+<td>S41</td>
+<td>AGS tests</td>
+<td>Apache-2.0 source</td>
+<td>431 test files observed in snapshot</td>
+<td>https://github.com/aerospike/aerospike-graph-service/tree/ad0983e5519cbd3705f70113afd7df048c568045/aerospike-graph-gremlin/src/test</td>
+</tr>
+<tr>
+<td>S43</td>
+<td>Database server source snapshot</td>
+<td>AGPL/community core source</td>
+<td>Server at 3c13b0de02f5ccaa6fffd8b9bbf3387b0c6a12dc</td>
+<td>https://github.com/aerospike/aerospike-server/tree/3c13b0de02f5ccaa6fffd8b9bbf3387b0c6a12dc</td>
+</tr>
+
+<tr>
+<td>S44</td>
+<td>Java client source snapshot</td>
+<td>Apache-2.0 source</td>
+<td>Client at 9d1f99a66f6590a3c489f6b0dd1589adcb8a1c12</td>
+<td>https://github.com/aerospike/aerospike-client-java/tree/9d1f99a66f6590a3c489f6b0dd1589adcb8a1c12</td>
+</tr>
+</tbody>
+</table>
