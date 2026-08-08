@@ -75,562 +75,543 @@ A trillion edges at 12 logical encoded bytes per direction is already 24 TB befo
 
 ## zu implementation and experiment backlog
 
+### Translating the useful parts without copying the authority model
+
+Aerospike's most reusable idea is not its specific record schema; it is the
+discipline of recognizing high-value traversal shapes before execution and
+grouping remote work by destination. In an S3-authoritative engine, the same
+discipline groups reads by immutable object and byte range instead of Database
+node. A point-rooted traversal resolves a stable vertex ID, finds the partition
+and block through the snapshot manifest, coalesces adjacent ranges, decodes
+columnar or adjacency blocks in batches, and applies predicates before creating
+edge objects. The operator reports object requests and bytes so a fast path is
+visible rather than hidden behind a generic traversal step.
+
+Aerospike's edge packing also provides a warning. Packing reduces per-record
+metadata and commands, but mutable packed records introduce false sharing. An
+immutable design can pack much more aggressively because readers address a
+content hash and writers publish a new generation instead of rewriting the
+shared object in place. The remaining tradeoff is read amplification: a block
+that is too large wastes S3 bytes and cache space for point access, while a block
+that is too small increases requests and metadata. Block targets should be
+chosen in bytes, with separate layouts for ordinary adjacency and supernodes,
+and validated against actual degree and property distributions.
+
+The source contains a useful constraint in the transaction configuration:
+
+```java
+// MRT operation can handle only 4096 records
+```
+
+This short extract is from pinned
+[`AerospikeConnectionConfig.java`](https://github.com/aerospike/aerospike-graph-service/blob/ad0983e5519cbd3705f70113afd7df048c568045/aerospike-graph-gremlin/src/main/java/com/aerospike/firefly/io/aerospike/AerospikeConnectionConfig.java).
+The lesson is to expose transaction scope as a concrete budget. The proposed
+engine should not advertise arbitrary distributed graph ACID if its inexpensive
+path can atomically publish only one manifest partition or a bounded key set.
+It should state the maximum keys, partitions, bytes, and time, provide
+idempotency tokens, and define how a client observes the published epoch.
+
+| Aerospike observation | Direct copy would cause | Proposed adaptation |
+| --- | --- | --- |
+| Mutable packed edge records | False sharing and collision under hot writes | Immutable adjacency blocks plus small delta segments |
+| Vertex record caches endpoint identity | Low-hop latency but duplicated mutable state | Versioned adjacency block with endpoint IDs in one snapshot |
+| One-way supernode transition | Performance cliff and irreversible layout state | Degree-aware chunking from initial build with online manifest rewrite |
+| Provider strategy batching | Efficient remote commands for recognized syntax | Typed physical IR with object-range coalescing and observable rules |
+| Global cache mode | Faster hot reads with stale, per-instance state | Epoch-keyed content cache with no correctness role |
+| Bounded MRT record count | Honest scope for multi-record mutation | Declared key, partition, byte, and deadline transaction budget |
+| Spark bulk loader | Separate path for high-volume creation | Direct immutable segment builder that writes final S3 format |
+| Scan disable control | Protects OLTP from accidental global work | Separate scan queue with request, byte, CPU, and result budgets |
+
 This backlog is ordered by dependency even though the case numbers are not release milestones. Format, manifest, dictionary, and snapshot correctness come before cache and latency work. Query operators are tested first with empty caches and fault-injected S3-compatible storage, then with bounded RAM and NVMe caches. Every experiment records object requests, byte ranges, decoded bytes, allocations, frontier size, spills, retries, compaction debt, and estimated request cost.
 
 An experiment graduates into a claim only after its semantic oracle, crash recovery, cancellation, and budget checks pass. Aerospike comparisons use the same logical traversal, result rules, durability, and cost boundary described in specification 06. A locally warm prototype that depends on unbounded cache is not a qualification result for an S3-authoritative engine.
 
-### Q001 : zu: stable vertex routing
-
-**Purpose.** Choose a hash/partition scheme that survives compute scaling.
-
-**Evidence anchors.** Aerospike evidence S09–S45 plus zu-owned implementation artifacts
-
-
-### Q002 : zu: partition map epoch
-
-**Purpose.** Route every query against an immutable snapshot.
-
-**Evidence anchors.** Aerospike evidence S09–S45 plus zu-owned implementation artifacts
-
-
-### Q003 : zu: manifest atomic publish
-
-**Purpose.** Make new snapshots all-or-nothing.
-
-**Evidence anchors.** Aerospike evidence S09–S45 plus zu-owned implementation artifacts
-
-
-### Q004 : zu: manifest service failure
-
-**Purpose.** Define read availability with cached signed manifests.
-
-**Evidence anchors.** Aerospike evidence S09–S45 plus zu-owned implementation artifacts
-
-
-### Q005 : zu: schema dictionary allocation
-
-**Purpose.** Avoid central hot counter while preserving stable decode.
-
-**Evidence anchors.** Aerospike evidence S09–S45 plus zu-owned implementation artifacts
-
-
-### Q006 : zu: dictionary merge
-
-**Purpose.** Reconcile distributed builders deterministically.
-
-**Evidence anchors.** Aerospike evidence S09–S45 plus zu-owned implementation artifacts
-
-
-### Q007 : zu: vertex block layout
-
-**Purpose.** Minimize point-read ranges and decode.
-
-**Evidence anchors.** Aerospike evidence S09–S45 plus zu-owned implementation artifacts
-
-
-### Q008 : zu: out adjacency block
-
-**Purpose.** Optimize dominant directed hop.
-
-**Evidence anchors.** Aerospike evidence S09–S45 plus zu-owned implementation artifacts
-
-
-### Q009 : zu: in adjacency optionality
-
-**Purpose.** Trade storage for reverse traversal SLO.
-
-**Evidence anchors.** Aerospike evidence S09–S45 plus zu-owned implementation artifacts
-
-
-### Q010 : zu: edge identity
-
-**Purpose.** Preserve parallel edges, deletes, and path identity.
-
-**Evidence anchors.** Aerospike evidence S09–S45 plus zu-owned implementation artifacts
-
-
-### Q011 : zu: edge property columns
-
-**Purpose.** Avoid reading unused values.
-
-**Evidence anchors.** Aerospike evidence S09–S45 plus zu-owned implementation artifacts
-
-
-### Q012 : zu: vertex property columns
-
-**Purpose.** Support projection and predicate pushdown.
-
-**Evidence anchors.** Aerospike evidence S09–S45 plus zu-owned implementation artifacts
-
-
-### Q013 : zu: normal degree packing
-
-**Purpose.** Tune block target by bytes, not edge count alone.
-
-**Evidence anchors.** Aerospike evidence S09–S45 plus zu-owned implementation artifacts
-
-
-### Q014 : zu: supernode preclassification
-
-**Purpose.** Avoid costly one-way layout migration at threshold.
-
-**Evidence anchors.** Aerospike evidence S09–S45 plus zu-owned implementation artifacts
-
-
-### Q015 : zu: supernode chunk key
-
-**Purpose.** Distribute hot reads/writes across chunks.
-
-**Evidence anchors.** Aerospike evidence S09–S45 plus zu-owned implementation artifacts
-
-
-### Q016 : zu: supernode label clustering
-
-**Purpose.** Skip irrelevant edge labels.
-
-**Evidence anchors.** Aerospike evidence S09–S45 plus zu-owned implementation artifacts
-
-
-### Q017 : zu: supernode property metadata
-
-**Purpose.** Use min/max/bloom/dictionary indexes to skip blocks.
-
-**Evidence anchors.** Aerospike evidence S09–S45 plus zu-owned implementation artifacts
-
-
-### Q018 : zu: S3 range coalescing
-
-**Purpose.** Combine adjacent reads per object.
-
-**Evidence anchors.** Aerospike evidence S09–S45 plus zu-owned implementation artifacts
-
-
-### Q019 : zu: S3 request hedging
-
-**Purpose.** Bound tails without uncontrolled request cost.
-
-**Evidence anchors.** Aerospike evidence S09–S45 plus zu-owned implementation artifacts
-
-
-### Q020 : zu: S3 retry budget
-
-**Purpose.** Prevent retry storms and duplicate billed requests.
-
-**Evidence anchors.** Aerospike evidence S09–S45 plus zu-owned implementation artifacts
-
-
-### Q021 : zu: S3 multipart builder
-
-**Purpose.** Write large immutable objects efficiently.
-
-**Evidence anchors.** Aerospike evidence S09–S45 plus zu-owned implementation artifacts
-
-
-### Q022 : zu: small-object avoidance
-
-**Purpose.** Control request cost and listing/metadata burden.
-
-**Evidence anchors.** Aerospike evidence S09–S45 plus zu-owned implementation artifacts
-
-
-### Q023 : zu: NVMe content cache
-
-**Purpose.** Make cached blocks reusable across epochs when content-identical.
-
-**Evidence anchors.** Aerospike evidence S09–S45 plus zu-owned implementation artifacts
-
-
-### Q024 : zu: RAM metadata cache
-
-**Purpose.** Bound routing/index state by bytes.
-
-**Evidence anchors.** Aerospike evidence S09–S45 plus zu-owned implementation artifacts
-
-
-### Q025 : zu: cache admission
-
-**Purpose.** Protect hot small blocks from scans.
-
-**Evidence anchors.** Aerospike evidence S09–S45 plus zu-owned implementation artifacts
-
-
-### Q026 : zu: tenant cache quota
-
-**Purpose.** Prevent noisy tenant eviction.
-
-**Evidence anchors.** Aerospike evidence S09–S45 plus zu-owned implementation artifacts
-
-
-### Q027 : zu: cold point lookup
-
-**Purpose.** Meet an honest object-store cold SLO.
-
-**Evidence anchors.** Aerospike evidence S09–S45 plus zu-owned implementation artifacts
-
-
-### Q028 : zu: warm point lookup
-
-**Purpose.** Target Aerospike-class latency from bounded cache.
-
-**Evidence anchors.** Aerospike evidence S09–S45 plus zu-owned implementation artifacts
-
-
-### Q029 : zu: frontier batching
-
-**Purpose.** Group next-hop IDs before I/O.
-
-**Evidence anchors.** Aerospike evidence S09–S45 plus zu-owned implementation artifacts
-
-
-### Q030 : zu: vectorized decode
-
-**Purpose.** Reduce CPU and allocations per edge.
-
-**Evidence anchors.** Aerospike evidence S09–S45 plus zu-owned implementation artifacts
-
-
-### Q031 : zu: predicate pushdown
-
-**Purpose.** Reject edges before object creation.
-
-**Evidence anchors.** Aerospike evidence S09–S45 plus zu-owned implementation artifacts
-
-
-### Q032 : zu: projection pushdown
-
-**Purpose.** Read/decode only needed property streams.
-
-**Evidence anchors.** Aerospike evidence S09–S45 plus zu-owned implementation artifacts
-
-
-### Q033 : zu: limit pushdown
-
-**Purpose.** Stop block reads after sufficient results while preserving order.
-
-**Evidence anchors.** Aerospike evidence S09–S45 plus zu-owned implementation artifacts
-
-
-### Q034 : zu: sample semantics
-
-**Purpose.** Avoid biased block-level samples.
-
-**Evidence anchors.** Aerospike evidence S09–S45 plus zu-owned implementation artifacts
-
-
-### Q035 : zu: local count
-
-**Purpose.** Answer from block metadata when semantically exact.
-
-**Evidence anchors.** Aerospike evidence S09–S45 plus zu-owned implementation artifacts
-
-
-### Q036 : zu: path memory
-
-**Purpose.** Bound path retention or spill explicitly.
-
-**Evidence anchors.** Aerospike evidence S09–S45 plus zu-owned implementation artifacts
-
-
-### Q037 : zu: cycle detection
-
-**Purpose.** Use compact visited structures with exact/approx modes.
-
-**Evidence anchors.** Aerospike evidence S09–S45 plus zu-owned implementation artifacts
-
-
-### Q038 : zu: typed physical IR
-
-**Purpose.** Make operator choices and semantics inspectable.
-
-**Evidence anchors.** Aerospike evidence S09–S45 plus zu-owned implementation artifacts
-
-
-### Q039 : zu: rule optimizer
-
-**Purpose.** Capture reliable ID/batch/pushdown rewrites.
-
-**Evidence anchors.** Aerospike evidence S09–S45 plus zu-owned implementation artifacts
-
-
-### Q040 : zu: cost optimizer
-
-**Purpose.** Choose scan/index/block paths from current stats.
-
-**Evidence anchors.** Aerospike evidence S09–S45 plus zu-owned implementation artifacts
-
-
-### Q041 : zu: stats freshness
-
-**Purpose.** Keep stale estimates from causing unbounded work.
-
-**Evidence anchors.** Aerospike evidence S09–S45 plus zu-owned implementation artifacts
-
-
-### Q042 : zu: plan fingerprint
-
-**Purpose.** Attach physical plan identity to every benchmark sample.
-
-**Evidence anchors.** Aerospike evidence S09–S45 plus zu-owned implementation artifacts
-
-
-### Q043 : zu: scan admission
-
-**Purpose.** Require explicit budget for O(N) operations.
-
-**Evidence anchors.** Aerospike evidence S09–S45 plus zu-owned implementation artifacts
-
-
-### Q044 : zu: heavy query queue
-
-**Purpose.** Isolate scans/supernodes from short OLTP.
-
-**Evidence anchors.** Aerospike evidence S09–S45 plus zu-owned implementation artifacts
-
-
-### Q045 : zu: memory admission
-
-**Purpose.** Reject before operator allocations exceed budget.
-
-**Evidence anchors.** Aerospike evidence S09–S45 plus zu-owned implementation artifacts
-
-
-### Q046 : zu: result backpressure
-
-**Purpose.** Stream with bounded buffers.
-
-**Evidence anchors.** Aerospike evidence S09–S45 plus zu-owned implementation artifacts
-
-
-### Q047 : zu: request cancellation
-
-**Purpose.** Stop S3 reads/decode after timeout/disconnect.
-
-**Evidence anchors.** Aerospike evidence S09–S45 plus zu-owned implementation artifacts
-
-
-### Q048 : zu: mutation idempotency
-
-**Purpose.** Use client operation IDs and sequence numbers.
-
-**Evidence anchors.** Aerospike evidence S09–S45 plus zu-owned implementation artifacts
-
-
-### Q049 : zu: delta visibility
-
-**Purpose.** Define when new vertices/edges enter snapshots.
-
-**Evidence anchors.** Aerospike evidence S09–S45 plus zu-owned implementation artifacts
-
-
-### Q050 : zu: read-your-writes
-
-**Purpose.** Offer session overlay or explicit wait-for-epoch.
-
-**Evidence anchors.** Aerospike evidence S09–S45 plus zu-owned implementation artifacts
-
-
-### Q051 : zu: snapshot isolation
-
-**Purpose.** Keep multi-hop traversal on one manifest epoch.
-
-**Evidence anchors.** Aerospike evidence S09–S45 plus zu-owned implementation artifacts
-
-
-### Q052 : zu: delete tombstone
-
-**Purpose.** Prevent resurrection across compaction/late writes.
-
-**Evidence anchors.** Aerospike evidence S09–S45 plus zu-owned implementation artifacts
-
-
-### Q053 : zu: transaction key set
-
-**Purpose.** Declare bounded atomic scope and failure behavior.
-
-**Evidence anchors.** Aerospike evidence S09–S45 plus zu-owned implementation artifacts
-
-
-### Q054 : zu: compaction budget
-
-**Purpose.** Cap CPU/network/S3 cost and publish debt.
-
-**Evidence anchors.** Aerospike evidence S09–S45 plus zu-owned implementation artifacts
-
-
-### Q055 : zu: compaction overlap
-
-**Purpose.** Charge temporary bytes and request cost.
-
-**Evidence anchors.** Aerospike evidence S09–S45 plus zu-owned implementation artifacts
-
-
-### Q056 : zu: incremental index build
-
-**Purpose.** Publish index atomically with compatible epoch.
-
-**Evidence anchors.** Aerospike evidence S09–S45 plus zu-owned implementation artifacts
-
-
-### Q057 : zu: bulk import
-
-**Purpose.** Build final layout without replaying online mutations.
-
-**Evidence anchors.** Aerospike evidence S09–S45 plus zu-owned implementation artifacts
-
-
-### Q058 : zu: bulk validation
-
-**Purpose.** Detect orphan edges, duplicate IDs, and type errors.
-
-**Evidence anchors.** Aerospike evidence S09–S45 plus zu-owned implementation artifacts
-
-
-### Q059 : zu: backup semantics
-
-**Purpose.** S3 authority makes snapshots native but catalog recovery still matters.
-
-**Evidence anchors.** Aerospike evidence S09–S45 plus zu-owned implementation artifacts
-
-
-### Q060 : zu: cross-region copy
-
-**Purpose.** Define RPO/RTO and manifest ordering.
-
-**Evidence anchors.** Aerospike evidence S09–S45 plus zu-owned implementation artifacts
-
-
-### Q061 : zu: object corruption
-
-**Purpose.** Use checksums, redundancy, and repair.
-
-**Evidence anchors.** Aerospike evidence S09–S45 plus zu-owned implementation artifacts
-
-
-### Q062 : zu: S3 outage
-
-**Purpose.** Define cached-read and write-log behavior.
-
-**Evidence anchors.** Aerospike evidence S09–S45 plus zu-owned implementation artifacts
-
-
-### Q063 : zu: worker loss
-
-**Purpose.** Retry stateless query fragments safely.
-
-**Evidence anchors.** Aerospike evidence S09–S45 plus zu-owned implementation artifacts
-
-
-### Q064 : zu: manifest split brain
-
-**Purpose.** Fence publishers and verify monotonic epochs.
-
-**Evidence anchors.** Aerospike evidence S09–S45 plus zu-owned implementation artifacts
-
-
-### Q065 : zu: fixed monthly request budget
-
-**Purpose.** Admission-control requests/bytes to a declared envelope.
-
-**Evidence anchors.** Aerospike evidence S09–S45 plus zu-owned implementation artifacts
-
-
-### Q066 : zu: per-query cost estimate
-
-**Purpose.** Expose S3 requests, bytes, CPU, cache, and egress.
-
-**Evidence anchors.** Aerospike evidence S09–S45 plus zu-owned implementation artifacts
-
-
-### Q067 : zu: per-tenant budget
-
-**Purpose.** Enforce predictable cost and fairness.
-
-**Evidence anchors.** Aerospike evidence S09–S45 plus zu-owned implementation artifacts
-
-
-### Q068 : zu: PB capacity derivation
-
-**Purpose.** Publish uncertainty bands and retained-history factor.
-
-**Evidence anchors.** Aerospike evidence S09–S45 plus zu-owned implementation artifacts
-
-
-### Q069 : zu: trillion-edge generator
-
-**Purpose.** Create realistic skew without materializing verbose input.
-
-**Evidence anchors.** Aerospike evidence S09–S45 plus zu-owned implementation artifacts
-
-
-### Q070 : zu: scale ladder
-
-**Purpose.** Run 1B, 10B, 100B, 1T and validate model error.
-
-**Evidence anchors.** Aerospike evidence S09–S45 plus zu-owned implementation artifacts
-
-
-### Q071 : zu: Aerospike normal-degree comparison
-
-**Purpose.** Target equal bounded traversal semantics.
-
-**Evidence anchors.** Aerospike evidence S09–S45 plus zu-owned implementation artifacts
-
-
-### Q072 : zu: Aerospike supernode comparison
-
-**Purpose.** Target filtered/unfiltered discontinuity.
-
-**Evidence anchors.** Aerospike evidence S09–S45 plus zu-owned implementation artifacts
-
-
-### Q073 : zu: Aerospike resource comparison
-
-**Purpose.** Charge AGS, DB, RF, headroom, indexes, and license.
-
-**Evidence anchors.** Aerospike evidence S09–S45 plus zu-owned implementation artifacts
-
-
-### Q074 : zu: Aerospike failure comparison
-
-**Purpose.** Match consistency and degraded-state requirements.
-
-**Evidence anchors.** Aerospike evidence S09–S45 plus zu-owned implementation artifacts
-
-
-### Q075 : zu: 10x p99 gate
-
-**Purpose.** Require confidence-bound ratio and correctness.
-
-**Evidence anchors.** Aerospike evidence S09–S45 plus zu-owned implementation artifacts
-
-
-### Q076 : zu: 10x resource gate
-
-**Purpose.** Require full-system bytes/CPU, not process cherry-picking.
-
-**Evidence anchors.** Aerospike evidence S09–S45 plus zu-owned implementation artifacts
-
-
-### Q077 : zu: 10x cost gate
-
-**Purpose.** Require same term/region/SLO and all services.
-
-**Evidence anchors.** Aerospike evidence S09–S45 plus zu-owned implementation artifacts
-
-
-### Q078 : zu: regression corpus
-
-**Purpose.** Retain every winning cell as continuous performance test.
-
-**Evidence anchors.** Aerospike evidence S09–S45 plus zu-owned implementation artifacts
-
-
-### Q079 : zu: public reproducibility
-
-**Purpose.** Publish data generator, harness, raw samples, configs, and analysis.
-
-**Evidence anchors.** Aerospike evidence S09–S45 plus zu-owned implementation artifacts
-
+<table>
+<thead>
+<tr>
+<th>Case</th>
+<th>Subject</th>
+<th>Engineering question</th>
+<th>Evidence</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Q001</td>
+<td>zu: stable vertex routing</td>
+<td>Choose a hash/partition scheme that survives compute scaling.</td>
+<td>Aerospike evidence S09–S45 plus zu-owned implementation artifacts</td>
+</tr>
+<tr>
+<td>Q002</td>
+<td>zu: partition map epoch</td>
+<td>Route every query against an immutable snapshot.</td>
+<td>Aerospike evidence S09–S45 plus zu-owned implementation artifacts</td>
+</tr>
+<tr>
+<td>Q003</td>
+<td>zu: manifest atomic publish</td>
+<td>Make new snapshots all-or-nothing.</td>
+<td>Aerospike evidence S09–S45 plus zu-owned implementation artifacts</td>
+</tr>
+<tr>
+<td>Q004</td>
+<td>zu: manifest service failure</td>
+<td>Define read availability with cached signed manifests.</td>
+<td>Aerospike evidence S09–S45 plus zu-owned implementation artifacts</td>
+</tr>
+<tr>
+<td>Q005</td>
+<td>zu: schema dictionary allocation</td>
+<td>Avoid central hot counter while preserving stable decode.</td>
+<td>Aerospike evidence S09–S45 plus zu-owned implementation artifacts</td>
+</tr>
+<tr>
+<td>Q006</td>
+<td>zu: dictionary merge</td>
+<td>Reconcile distributed builders deterministically.</td>
+<td>Aerospike evidence S09–S45 plus zu-owned implementation artifacts</td>
+</tr>
+<tr>
+<td>Q007</td>
+<td>zu: vertex block layout</td>
+<td>Minimize point-read ranges and decode.</td>
+<td>Aerospike evidence S09–S45 plus zu-owned implementation artifacts</td>
+</tr>
+<tr>
+<td>Q008</td>
+<td>zu: out adjacency block</td>
+<td>Optimize dominant directed hop.</td>
+<td>Aerospike evidence S09–S45 plus zu-owned implementation artifacts</td>
+</tr>
+<tr>
+<td>Q009</td>
+<td>zu: in adjacency optionality</td>
+<td>Trade storage for reverse traversal SLO.</td>
+<td>Aerospike evidence S09–S45 plus zu-owned implementation artifacts</td>
+</tr>
+<tr>
+<td>Q010</td>
+<td>zu: edge identity</td>
+<td>Preserve parallel edges, deletes, and path identity.</td>
+<td>Aerospike evidence S09–S45 plus zu-owned implementation artifacts</td>
+</tr>
+<tr>
+<td>Q011</td>
+<td>zu: edge property columns</td>
+<td>Avoid reading unused values.</td>
+<td>Aerospike evidence S09–S45 plus zu-owned implementation artifacts</td>
+</tr>
+<tr>
+<td>Q012</td>
+<td>zu: vertex property columns</td>
+<td>Support projection and predicate pushdown.</td>
+<td>Aerospike evidence S09–S45 plus zu-owned implementation artifacts</td>
+</tr>
+<tr>
+<td>Q013</td>
+<td>zu: normal degree packing</td>
+<td>Tune block target by bytes, not edge count alone.</td>
+<td>Aerospike evidence S09–S45 plus zu-owned implementation artifacts</td>
+</tr>
+<tr>
+<td>Q014</td>
+<td>zu: supernode preclassification</td>
+<td>Avoid costly one-way layout migration at threshold.</td>
+<td>Aerospike evidence S09–S45 plus zu-owned implementation artifacts</td>
+</tr>
+<tr>
+<td>Q015</td>
+<td>zu: supernode chunk key</td>
+<td>Distribute hot reads/writes across chunks.</td>
+<td>Aerospike evidence S09–S45 plus zu-owned implementation artifacts</td>
+</tr>
+<tr>
+<td>Q016</td>
+<td>zu: supernode label clustering</td>
+<td>Skip irrelevant edge labels.</td>
+<td>Aerospike evidence S09–S45 plus zu-owned implementation artifacts</td>
+</tr>
+<tr>
+<td>Q017</td>
+<td>zu: supernode property metadata</td>
+<td>Use min/max/bloom/dictionary indexes to skip blocks.</td>
+<td>Aerospike evidence S09–S45 plus zu-owned implementation artifacts</td>
+</tr>
+<tr>
+<td>Q018</td>
+<td>zu: S3 range coalescing</td>
+<td>Combine adjacent reads per object.</td>
+<td>Aerospike evidence S09–S45 plus zu-owned implementation artifacts</td>
+</tr>
+<tr>
+<td>Q019</td>
+<td>zu: S3 request hedging</td>
+<td>Bound tails without uncontrolled request cost.</td>
+<td>Aerospike evidence S09–S45 plus zu-owned implementation artifacts</td>
+</tr>
+<tr>
+<td>Q020</td>
+<td>zu: S3 retry budget</td>
+<td>Prevent retry storms and duplicate billed requests.</td>
+<td>Aerospike evidence S09–S45 plus zu-owned implementation artifacts</td>
+</tr>
+<tr>
+<td>Q021</td>
+<td>zu: S3 multipart builder</td>
+<td>Write large immutable objects efficiently.</td>
+<td>Aerospike evidence S09–S45 plus zu-owned implementation artifacts</td>
+</tr>
+<tr>
+<td>Q022</td>
+<td>zu: small-object avoidance</td>
+<td>Control request cost and listing/metadata burden.</td>
+<td>Aerospike evidence S09–S45 plus zu-owned implementation artifacts</td>
+</tr>
+<tr>
+<td>Q023</td>
+<td>zu: NVMe content cache</td>
+<td>Make cached blocks reusable across epochs when content-identical.</td>
+<td>Aerospike evidence S09–S45 plus zu-owned implementation artifacts</td>
+</tr>
+<tr>
+<td>Q024</td>
+<td>zu: RAM metadata cache</td>
+<td>Bound routing/index state by bytes.</td>
+<td>Aerospike evidence S09–S45 plus zu-owned implementation artifacts</td>
+</tr>
+<tr>
+<td>Q025</td>
+<td>zu: cache admission</td>
+<td>Protect hot small blocks from scans.</td>
+<td>Aerospike evidence S09–S45 plus zu-owned implementation artifacts</td>
+</tr>
+<tr>
+<td>Q026</td>
+<td>zu: tenant cache quota</td>
+<td>Prevent noisy tenant eviction.</td>
+<td>Aerospike evidence S09–S45 plus zu-owned implementation artifacts</td>
+</tr>
+<tr>
+<td>Q027</td>
+<td>zu: cold point lookup</td>
+<td>Meet an honest object-store cold SLO.</td>
+<td>Aerospike evidence S09–S45 plus zu-owned implementation artifacts</td>
+</tr>
+<tr>
+<td>Q028</td>
+<td>zu: warm point lookup</td>
+<td>Target Aerospike-class latency from bounded cache.</td>
+<td>Aerospike evidence S09–S45 plus zu-owned implementation artifacts</td>
+</tr>
+<tr>
+<td>Q029</td>
+<td>zu: frontier batching</td>
+<td>Group next-hop IDs before I/O.</td>
+<td>Aerospike evidence S09–S45 plus zu-owned implementation artifacts</td>
+</tr>
+<tr>
+<td>Q030</td>
+<td>zu: vectorized decode</td>
+<td>Reduce CPU and allocations per edge.</td>
+<td>Aerospike evidence S09–S45 plus zu-owned implementation artifacts</td>
+</tr>
+<tr>
+<td>Q031</td>
+<td>zu: predicate pushdown</td>
+<td>Reject edges before object creation.</td>
+<td>Aerospike evidence S09–S45 plus zu-owned implementation artifacts</td>
+</tr>
+<tr>
+<td>Q032</td>
+<td>zu: projection pushdown</td>
+<td>Read/decode only needed property streams.</td>
+<td>Aerospike evidence S09–S45 plus zu-owned implementation artifacts</td>
+</tr>
+<tr>
+<td>Q033</td>
+<td>zu: limit pushdown</td>
+<td>Stop block reads after sufficient results while preserving order.</td>
+<td>Aerospike evidence S09–S45 plus zu-owned implementation artifacts</td>
+</tr>
+<tr>
+<td>Q034</td>
+<td>zu: sample semantics</td>
+<td>Avoid biased block-level samples.</td>
+<td>Aerospike evidence S09–S45 plus zu-owned implementation artifacts</td>
+</tr>
+<tr>
+<td>Q035</td>
+<td>zu: local count</td>
+<td>Answer from block metadata when semantically exact.</td>
+<td>Aerospike evidence S09–S45 plus zu-owned implementation artifacts</td>
+</tr>
+<tr>
+<td>Q036</td>
+<td>zu: path memory</td>
+<td>Bound path retention or spill explicitly.</td>
+<td>Aerospike evidence S09–S45 plus zu-owned implementation artifacts</td>
+</tr>
+<tr>
+<td>Q037</td>
+<td>zu: cycle detection</td>
+<td>Use compact visited structures with exact/approx modes.</td>
+<td>Aerospike evidence S09–S45 plus zu-owned implementation artifacts</td>
+</tr>
+<tr>
+<td>Q038</td>
+<td>zu: typed physical IR</td>
+<td>Make operator choices and semantics inspectable.</td>
+<td>Aerospike evidence S09–S45 plus zu-owned implementation artifacts</td>
+</tr>
+<tr>
+<td>Q039</td>
+<td>zu: rule optimizer</td>
+<td>Capture reliable ID/batch/pushdown rewrites.</td>
+<td>Aerospike evidence S09–S45 plus zu-owned implementation artifacts</td>
+</tr>
+<tr>
+<td>Q040</td>
+<td>zu: cost optimizer</td>
+<td>Choose scan/index/block paths from current stats.</td>
+<td>Aerospike evidence S09–S45 plus zu-owned implementation artifacts</td>
+</tr>
+<tr>
+<td>Q041</td>
+<td>zu: stats freshness</td>
+<td>Keep stale estimates from causing unbounded work.</td>
+<td>Aerospike evidence S09–S45 plus zu-owned implementation artifacts</td>
+</tr>
+<tr>
+<td>Q042</td>
+<td>zu: plan fingerprint</td>
+<td>Attach physical plan identity to every benchmark sample.</td>
+<td>Aerospike evidence S09–S45 plus zu-owned implementation artifacts</td>
+</tr>
+<tr>
+<td>Q043</td>
+<td>zu: scan admission</td>
+<td>Require explicit budget for O(N) operations.</td>
+<td>Aerospike evidence S09–S45 plus zu-owned implementation artifacts</td>
+</tr>
+<tr>
+<td>Q044</td>
+<td>zu: heavy query queue</td>
+<td>Isolate scans/supernodes from short OLTP.</td>
+<td>Aerospike evidence S09–S45 plus zu-owned implementation artifacts</td>
+</tr>
+<tr>
+<td>Q045</td>
+<td>zu: memory admission</td>
+<td>Reject before operator allocations exceed budget.</td>
+<td>Aerospike evidence S09–S45 plus zu-owned implementation artifacts</td>
+</tr>
+<tr>
+<td>Q046</td>
+<td>zu: result backpressure</td>
+<td>Stream with bounded buffers.</td>
+<td>Aerospike evidence S09–S45 plus zu-owned implementation artifacts</td>
+</tr>
+<tr>
+<td>Q047</td>
+<td>zu: request cancellation</td>
+<td>Stop S3 reads/decode after timeout/disconnect.</td>
+<td>Aerospike evidence S09–S45 plus zu-owned implementation artifacts</td>
+</tr>
+<tr>
+<td>Q048</td>
+<td>zu: mutation idempotency</td>
+<td>Use client operation IDs and sequence numbers.</td>
+<td>Aerospike evidence S09–S45 plus zu-owned implementation artifacts</td>
+</tr>
+<tr>
+<td>Q049</td>
+<td>zu: delta visibility</td>
+<td>Define when new vertices/edges enter snapshots.</td>
+<td>Aerospike evidence S09–S45 plus zu-owned implementation artifacts</td>
+</tr>
+<tr>
+<td>Q050</td>
+<td>zu: read-your-writes</td>
+<td>Offer session overlay or explicit wait-for-epoch.</td>
+<td>Aerospike evidence S09–S45 plus zu-owned implementation artifacts</td>
+</tr>
+<tr>
+<td>Q051</td>
+<td>zu: snapshot isolation</td>
+<td>Keep multi-hop traversal on one manifest epoch.</td>
+<td>Aerospike evidence S09–S45 plus zu-owned implementation artifacts</td>
+</tr>
+<tr>
+<td>Q052</td>
+<td>zu: delete tombstone</td>
+<td>Prevent resurrection across compaction/late writes.</td>
+<td>Aerospike evidence S09–S45 plus zu-owned implementation artifacts</td>
+</tr>
+<tr>
+<td>Q053</td>
+<td>zu: transaction key set</td>
+<td>Declare bounded atomic scope and failure behavior.</td>
+<td>Aerospike evidence S09–S45 plus zu-owned implementation artifacts</td>
+</tr>
+<tr>
+<td>Q054</td>
+<td>zu: compaction budget</td>
+<td>Cap CPU/network/S3 cost and publish debt.</td>
+<td>Aerospike evidence S09–S45 plus zu-owned implementation artifacts</td>
+</tr>
+<tr>
+<td>Q055</td>
+<td>zu: compaction overlap</td>
+<td>Charge temporary bytes and request cost.</td>
+<td>Aerospike evidence S09–S45 plus zu-owned implementation artifacts</td>
+</tr>
+<tr>
+<td>Q056</td>
+<td>zu: incremental index build</td>
+<td>Publish index atomically with compatible epoch.</td>
+<td>Aerospike evidence S09–S45 plus zu-owned implementation artifacts</td>
+</tr>
+<tr>
+<td>Q057</td>
+<td>zu: bulk import</td>
+<td>Build final layout without replaying online mutations.</td>
+<td>Aerospike evidence S09–S45 plus zu-owned implementation artifacts</td>
+</tr>
+<tr>
+<td>Q058</td>
+<td>zu: bulk validation</td>
+<td>Detect orphan edges, duplicate IDs, and type errors.</td>
+<td>Aerospike evidence S09–S45 plus zu-owned implementation artifacts</td>
+</tr>
+<tr>
+<td>Q059</td>
+<td>zu: backup semantics</td>
+<td>S3 authority makes snapshots native but catalog recovery still matters.</td>
+<td>Aerospike evidence S09–S45 plus zu-owned implementation artifacts</td>
+</tr>
+<tr>
+<td>Q060</td>
+<td>zu: cross-region copy</td>
+<td>Define RPO/RTO and manifest ordering.</td>
+<td>Aerospike evidence S09–S45 plus zu-owned implementation artifacts</td>
+</tr>
+<tr>
+<td>Q061</td>
+<td>zu: object corruption</td>
+<td>Use checksums, redundancy, and repair.</td>
+<td>Aerospike evidence S09–S45 plus zu-owned implementation artifacts</td>
+</tr>
+<tr>
+<td>Q062</td>
+<td>zu: S3 outage</td>
+<td>Define cached-read and write-log behavior.</td>
+<td>Aerospike evidence S09–S45 plus zu-owned implementation artifacts</td>
+</tr>
+<tr>
+<td>Q063</td>
+<td>zu: worker loss</td>
+<td>Retry stateless query fragments safely.</td>
+<td>Aerospike evidence S09–S45 plus zu-owned implementation artifacts</td>
+</tr>
+<tr>
+<td>Q064</td>
+<td>zu: manifest split brain</td>
+<td>Fence publishers and verify monotonic epochs.</td>
+<td>Aerospike evidence S09–S45 plus zu-owned implementation artifacts</td>
+</tr>
+<tr>
+<td>Q065</td>
+<td>zu: fixed monthly request budget</td>
+<td>Admission-control requests/bytes to a declared envelope.</td>
+<td>Aerospike evidence S09–S45 plus zu-owned implementation artifacts</td>
+</tr>
+<tr>
+<td>Q066</td>
+<td>zu: per-query cost estimate</td>
+<td>Expose S3 requests, bytes, CPU, cache, and egress.</td>
+<td>Aerospike evidence S09–S45 plus zu-owned implementation artifacts</td>
+</tr>
+<tr>
+<td>Q067</td>
+<td>zu: per-tenant budget</td>
+<td>Enforce predictable cost and fairness.</td>
+<td>Aerospike evidence S09–S45 plus zu-owned implementation artifacts</td>
+</tr>
+<tr>
+<td>Q068</td>
+<td>zu: PB capacity derivation</td>
+<td>Publish uncertainty bands and retained-history factor.</td>
+<td>Aerospike evidence S09–S45 plus zu-owned implementation artifacts</td>
+</tr>
+<tr>
+<td>Q069</td>
+<td>zu: trillion-edge generator</td>
+<td>Create realistic skew without materializing verbose input.</td>
+<td>Aerospike evidence S09–S45 plus zu-owned implementation artifacts</td>
+</tr>
+<tr>
+<td>Q070</td>
+<td>zu: scale ladder</td>
+<td>Run 1B, 10B, 100B, 1T and validate model error.</td>
+<td>Aerospike evidence S09–S45 plus zu-owned implementation artifacts</td>
+</tr>
+<tr>
+<td>Q071</td>
+<td>zu: Aerospike normal-degree comparison</td>
+<td>Target equal bounded traversal semantics.</td>
+<td>Aerospike evidence S09–S45 plus zu-owned implementation artifacts</td>
+</tr>
+<tr>
+<td>Q072</td>
+<td>zu: Aerospike supernode comparison</td>
+<td>Target filtered/unfiltered discontinuity.</td>
+<td>Aerospike evidence S09–S45 plus zu-owned implementation artifacts</td>
+</tr>
+<tr>
+<td>Q073</td>
+<td>zu: Aerospike resource comparison</td>
+<td>Charge AGS, DB, RF, headroom, indexes, and license.</td>
+<td>Aerospike evidence S09–S45 plus zu-owned implementation artifacts</td>
+</tr>
+<tr>
+<td>Q074</td>
+<td>zu: Aerospike failure comparison</td>
+<td>Match consistency and degraded-state requirements.</td>
+<td>Aerospike evidence S09–S45 plus zu-owned implementation artifacts</td>
+</tr>
+<tr>
+<td>Q075</td>
+<td>zu: 10x p99 gate</td>
+<td>Require confidence-bound ratio and correctness.</td>
+<td>Aerospike evidence S09–S45 plus zu-owned implementation artifacts</td>
+</tr>
+<tr>
+<td>Q076</td>
+<td>zu: 10x resource gate</td>
+<td>Require full-system bytes/CPU, not process cherry-picking.</td>
+<td>Aerospike evidence S09–S45 plus zu-owned implementation artifacts</td>
+</tr>
+<tr>
+<td>Q077</td>
+<td>zu: 10x cost gate</td>
+<td>Require same term/region/SLO and all services.</td>
+<td>Aerospike evidence S09–S45 plus zu-owned implementation artifacts</td>
+</tr>
+<tr>
+<td>Q078</td>
+<td>zu: regression corpus</td>
+<td>Retain every winning cell as continuous performance test.</td>
+<td>Aerospike evidence S09–S45 plus zu-owned implementation artifacts</td>
+</tr>
+<tr>
+<td>Q079</td>
+<td>zu: public reproducibility</td>
+<td>Publish data generator, harness, raw samples, configs, and analysis.</td>
+<td>Aerospike evidence S09–S45 plus zu-owned implementation artifacts</td>
+</tr>
+</tbody>
+</table>
 
 ## Release gates
 
@@ -649,451 +630,366 @@ G9: public artifact bundle sufficient for an independent rerun.
 
 The retrieval date for web sources is the research cut. Git sources are pinned by commit. A source being official establishes what was stated or implemented; it does not independently establish a performance claim.
 
-### S01 : AGS release index
-
-**Type.** Official documentation
-
-**Audit note.** 2026-06-30 latest listed release
-
-**URL.** https://aerospike.com/docs/graph/release
-
-
-### S02 : AGS 3.2.3 release notes
-
-**Type.** Official documentation
-
-**Audit note.** Security-only patch; 14 CVEs listed
-
-**URL.** https://aerospike.com/docs/graph/release/3-2-3/
-
-
-### S03 : AGS 3.2.2 release notes
-
-**Type.** Official documentation
-
-**Audit note.** Removed graph-service feature check
-
-**URL.** https://aerospike.com/docs/graph/release/3-2-2/
-
-
-### S04 : AGS 3.2.1 release notes
-
-**Type.** Official documentation
-
-**Audit note.** Container memory and rack awareness
-
-**URL.** https://aerospike.com/docs/graph/release/3-2-1/
-
-
-### S05 : AGS 3.2.0 release notes
-
-**Type.** Official documentation
-
-**Audit note.** Global cache, set cardinality, performance changes
-
-**URL.** https://aerospike.com/docs/graph/release/3-2-0/
-
-
-### S06 : AGS 3.1.1 release notes
-
-**Type.** Official documentation
-
-**Audit note.** CVE-2025-12383 fix
-
-**URL.** https://aerospike.com/docs/graph/release/3-1-1/
-
-
-### S07 : AGS 3.1.0 release notes
-
-**Type.** Official documentation
-
-**Audit note.** TinkerPop transactions and typed indexes
-
-**URL.** https://aerospike.com/docs/graph/release/3-1-0/
-
-
-### S08 : AGS 3.0.0 release notes
-
-**Type.** Official documentation
-
-**Audit note.** Packed model revision and reload boundary
-
-**URL.** https://aerospike.com/docs/graph/release/3-0-0/
-
-
-### S09 : Architecture
-
-**Type.** Official documentation
-
-**Audit note.** Three-layer request path
-
-**URL.** https://aerospike.com/docs/graph/overview/architecture/
-
-
-### S10 : Transaction contract
-
-**Type.** Official documentation
-
-**Audit note.** Read, mutation, SC, AP, and MRT distinctions
-
-**URL.** https://aerospike.com/docs/graph/develop/query/transactions/
-
-
-### S11 : Indexing
-
-**Type.** Official documentation
-
-**Audit note.** Vertex index and scan controls
-
-**URL.** https://aerospike.com/docs/graph/develop/query/indexing/
-
-
-### S12 : Supernodes
-
-**Type.** Official documentation
-
-**Audit note.** Thresholds and filtered traversal guidance
-
-**URL.** https://aerospike.com/docs/graph/develop/query/supernodes/
-
-
-### S13 : Query threading
-
-**Type.** Official documentation
-
-**Audit note.** Per-query parallelization and batch/page controls
-
-**URL.** https://aerospike.com/docs/graph/develop/query/query-threading/
-
-
-### S14 : Cache management
-
-**Type.** Official documentation
-
-**Audit note.** Transactional and global record caches
-
-**URL.** https://aerospike.com/docs/graph/manage/cache/
-
-
-### S15 : Data types
-
-**Type.** Official documentation
-
-**Audit note.** Property and index type limitations
-
-**URL.** https://aerospike.com/docs/graph/develop/query/data-type-support/
-
-
-### S16 : TinkerPop feature support
-
-**Type.** Official documentation
-
-**Audit note.** Feature compatibility matrix
-
-**URL.** https://aerospike.com/docs/graph/overview/tinkerpop/
-
-
-### S17 : Configuration reference
-
-**Type.** Official documentation
-
-**Audit note.** AGS runtime knobs
-
-**URL.** https://aerospike.com/docs/graph/reference/config/
-
-
-### S18 : Metrics reference
-
-**Type.** Official documentation
-
-**Audit note.** Prometheus metric inventory
-
-**URL.** https://aerospike.com/docs/graph/reference/metrics/
-
-
-### S19 : Query tracing
-
-**Type.** Official documentation
-
-**Audit note.** Zipkin tracing contract
-
-**URL.** https://aerospike.com/docs/graph/observe/query-tracing/
-
-
-### S20 : Bulk load overview
-
-**Type.** Official documentation
-
-**Audit note.** Standalone and Spark paths
-
-**URL.** https://aerospike.com/docs/graph/load/overview/
-
-
-### S21 : Distributed bulk load
-
-**Type.** Official documentation
-
-**Audit note.** EMR and Dataproc workflow
-
-**URL.** https://aerospike.com/docs/graph/load/distributed/
-
-
-### S22 : Graph backup and restore
-
-**Type.** Official documentation
-
-**Audit note.** Graph delegates recovery to the underlying Database tooling; its current link still lands on the legacy asbackup page
-
-**URL.** https://aerospike.com/docs/graph/manage/backup/
-
-
-### S23 : Security
-
-**Type.** Official documentation
-
-**Audit note.** TLS, JWT RBAC, database RBAC, audit
-
-**URL.** https://aerospike.com/docs/graph/manage/security/
-
-
-### S24 : Multi-tenancy
-
-**Type.** Official documentation
-
-**Audit note.** Graph scoping in a shared namespace
-
-**URL.** https://aerospike.com/docs/graph/manage/multi-tenant/
-
-
-### S25 : Identity graph benchmark PDF
-
-**Type.** Vendor benchmark
-
-**Audit note.** AGS 2.4.2 / Database 7.1.0.9 test
-
-**URL.** https://aerospike.com/files/benchmarks/aerospike-graph-performance-benchmark.pdf
-
-
-### S26 : Graph 3.0 launch blog
-
-**Type.** Vendor blog
-
-**Audit note.** Ingest and footprint claims
-
-**URL.** https://aerospike.com/blog/aerospike-graph-3-release/
-
-
-### S27 : Architecture deep-dive blog
-
-**Type.** Vendor blog
-
-**Audit note.** Optimizer and record-model explanation
-
-**URL.** https://aerospike.com/blog/graphing-database-architecture/
-
-
-### S28 : Product editions and pricing
-
-**Type.** Official commercial page
-
-**Audit note.** Edition limits and data-volume licensing
-
-**URL.** https://aerospike.com/products/features-and-editions/
-
-
-### S29 : Database platform support
-
-**Type.** Official documentation
-
-**Audit note.** Current Database release matrix
-
-**URL.** https://aerospike.com/docs/database/reference/platform-support
-
-
-### S30 : Database limits
-
-**Type.** Official documentation
-
-**Audit note.** Cluster and object limits
-
-**URL.** https://aerospike.com/docs/database/reference/limitations/
-
-
-### S31 : Database storage configuration
-
-**Type.** Official documentation
-
-**Audit note.** Memory, device, and persistence modes
-
-**URL.** https://aerospike.com/docs/database/manage/namespace/storage/config/
-
-
-### S32 : Database FAQ
-
-**Type.** Official documentation
-
-**Audit note.** CE/SE/EE/FE boundaries
-
-**URL.** https://aerospike.com/docs/database/reference/faq
-
-
-### S33 : AGS public source snapshot
-
-**Type.** Apache-2.0 source
-
-**Audit note.** 3.x-dev at ad0983e5519cbd3705f70113afd7df048c568045
-
-**URL.** https://github.com/aerospike/aerospike-graph-service/tree/ad0983e5519cbd3705f70113afd7df048c568045
-
-
-### S34 : AGS data model design
-
-**Type.** Apache-2.0 source documentation
-
-**Audit note.** Packed record layout
-
-**URL.** https://github.com/aerospike/aerospike-graph-service/blob/ad0983e5519cbd3705f70113afd7df048c568045/docs/DATA_MODEL_DESIGN.md
-
-
-### S35 : AGS architecture source map
-
-**Type.** Apache-2.0 source documentation
-
-**Audit note.** Modules and entry points
-
-**URL.** https://github.com/aerospike/aerospike-graph-service/blob/ad0983e5519cbd3705f70113afd7df048c568045/docs/ARCHITECTURE.md
-
-
-### S36 : AGS AerospikeOperations
-
-**Type.** Apache-2.0 source
-
-**Audit note.** Read/write and edge mutation pipeline
-
-**URL.** https://github.com/aerospike/aerospike-graph-service/blob/ad0983e5519cbd3705f70113afd7df048c568045/aerospike-graph-gremlin/src/main/java/com/aerospike/firefly/io/aerospike/AerospikeOperations.java
-
-
-### S37 : AGS configuration source
-
-**Type.** Apache-2.0 source
-
-**Audit note.** Code defaults and validators
-
-**URL.** https://github.com/aerospike/aerospike-graph-service/blob/ad0983e5519cbd3705f70113afd7df048c568045/aerospike-graph-gremlin/src/main/java/com/aerospike/firefly/util/config/ConfigurationHelper.java
-
-
-### S38 : AGS query code
-
-**Type.** Apache-2.0 source
-
-**Audit note.** Paged scans and secondary-index queries
-
-**URL.** https://github.com/aerospike/aerospike-graph-service/tree/ad0983e5519cbd3705f70113afd7df048c568045/aerospike-graph-gremlin/src/main/java/com/aerospike/firefly/io/aerospike/query
-
-
-### S39 : AGS traversal strategies
-
-**Type.** Apache-2.0 source
-
-**Audit note.** Rewrite implementations
-
-**URL.** https://github.com/aerospike/aerospike-graph-service/tree/ad0983e5519cbd3705f70113afd7df048c568045/aerospike-graph-gremlin/src/main/java/com/aerospike/firefly/process/traversal/strategy
-
-
-### S40 : AGS transaction implementation
-
-**Type.** Apache-2.0 source
-
-**Audit note.** TinkerPop transaction wrapper
-
-**URL.** https://github.com/aerospike/aerospike-graph-service/blob/ad0983e5519cbd3705f70113afd7df048c568045/aerospike-graph-gremlin/src/main/java/com/aerospike/firefly/structure/transaction/FireflyTransaction.java
-
-
-### S41 : AGS tests
-
-**Type.** Apache-2.0 source
-
-**Audit note.** 431 test files observed in snapshot
-
-**URL.** https://github.com/aerospike/aerospike-graph-service/tree/ad0983e5519cbd3705f70113afd7df048c568045/aerospike-graph-gremlin/src/test
-
-
-### S42 : Graph examples
-
-**Type.** Apache-2.0 source
-
-**Audit note.** Examples at e2300bc201f949c4261ecd88b235dea1877fa088
-
-**URL.** https://github.com/aerospike/aerospike-graph/tree/e2300bc201f949c4261ecd88b235dea1877fa088
-
-
-### S43 : Database server source snapshot
-
-**Type.** AGPL/community core source
-
-**Audit note.** Server at 3c13b0de02f5ccaa6fffd8b9bbf3387b0c6a12dc
-
-**URL.** https://github.com/aerospike/aerospike-server/tree/3c13b0de02f5ccaa6fffd8b9bbf3387b0c6a12dc
-
-
-### S44 : Java client source snapshot
-
-**Type.** Apache-2.0 source
-
-**Audit note.** Client at 9d1f99a66f6590a3c489f6b0dd1589adcb8a1c12
-
-**URL.** https://github.com/aerospike/aerospike-client-java/tree/9d1f99a66f6590a3c489f6b0dd1589adcb8a1c12
-
-
-### S45 : Apache TinkerPop 3.7.3 reference
-
-**Type.** Upstream documentation
-
-**Audit note.** Language/runtime semantic oracle
-
-**URL.** https://tinkerpop.apache.org/docs/3.7.3/reference/
-
-
-### S46 : AGS v3.3.0-rc5 prerelease tag
-
-**Type.** Signed public source tag
-
-**Audit note.** Newest public prerelease observed on 2026-08-08; commit f4980a73f64bde1f3db0b30e917f3ec7fb147ce3
-
-**URL.** https://github.com/aerospike/aerospike-graph-service/tree/f4980a73f64bde1f3db0b30e917f3ec7fb147ce3
-
-
-### S47 : Graph 2.5 strong-consistency launch blog
-
-**Type.** Vendor blog
-
-**Audit note.** Database 8 transaction positioning and the explicit eventual-read caveat
-
-**URL.** https://aerospike.com/blog/aerospike-graph-2-5-0-strong-consistency
-
-
-### S48 : Aerospike Graph AI and MCP blog
-
-**Type.** Vendor blog
-
-**Audit note.** Newest Graph-specific blog found in the publication sweep; an integration/demo layer, not a storage-engine release
-
-**URL.** https://aerospike.com/blog/aerospike-graph-ai-mcp-natural-language-queries/
-
-
-### S49 : Legacy asbackup documentation
-
-**Type.** Official documentation
-
-**Audit note.** The target of the current Graph backup-page link; explicitly labeled legacy
-
-**URL.** https://aerospike.com/docs/database/tools/backup-and-restore/asbackup
-
-
-### S50 : Current Database backup and restore overview
-
-**Type.** Official documentation
-
-**Audit note.** ABS and absctl are current choices while asbackup/asrestore are legacy
-
-**URL.** https://aerospike.com/docs/database/tools/backup-and-restore/overview/
+<table>
+<thead>
+<tr>
+<th>ID</th>
+<th>Source</th>
+<th>Class</th>
+<th>Audit use</th>
+<th>Link</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>S01</td>
+<td>AGS release index</td>
+<td>Official documentation</td>
+<td>2026-06-30 latest listed release</td>
+<td>https://aerospike.com/docs/graph/release</td>
+</tr>
+<tr>
+<td>S02</td>
+<td>AGS 3.2.3 release notes</td>
+<td>Official documentation</td>
+<td>Security-only patch; 14 CVEs listed</td>
+<td>https://aerospike.com/docs/graph/release/3-2-3/</td>
+</tr>
+<tr>
+<td>S03</td>
+<td>AGS 3.2.2 release notes</td>
+<td>Official documentation</td>
+<td>Removed graph-service feature check</td>
+<td>https://aerospike.com/docs/graph/release/3-2-2/</td>
+</tr>
+<tr>
+<td>S04</td>
+<td>AGS 3.2.1 release notes</td>
+<td>Official documentation</td>
+<td>Container memory and rack awareness</td>
+<td>https://aerospike.com/docs/graph/release/3-2-1/</td>
+</tr>
+<tr>
+<td>S05</td>
+<td>AGS 3.2.0 release notes</td>
+<td>Official documentation</td>
+<td>Global cache, set cardinality, performance changes</td>
+<td>https://aerospike.com/docs/graph/release/3-2-0/</td>
+</tr>
+<tr>
+<td>S06</td>
+<td>AGS 3.1.1 release notes</td>
+<td>Official documentation</td>
+<td>CVE-2025-12383 fix</td>
+<td>https://aerospike.com/docs/graph/release/3-1-1/</td>
+</tr>
+<tr>
+<td>S07</td>
+<td>AGS 3.1.0 release notes</td>
+<td>Official documentation</td>
+<td>TinkerPop transactions and typed indexes</td>
+<td>https://aerospike.com/docs/graph/release/3-1-0/</td>
+</tr>
+<tr>
+<td>S08</td>
+<td>AGS 3.0.0 release notes</td>
+<td>Official documentation</td>
+<td>Packed model revision and reload boundary</td>
+<td>https://aerospike.com/docs/graph/release/3-0-0/</td>
+</tr>
+<tr>
+<td>S09</td>
+<td>Architecture</td>
+<td>Official documentation</td>
+<td>Three-layer request path</td>
+<td>https://aerospike.com/docs/graph/overview/architecture/</td>
+</tr>
+<tr>
+<td>S10</td>
+<td>Transaction contract</td>
+<td>Official documentation</td>
+<td>Read, mutation, SC, AP, and MRT distinctions</td>
+<td>https://aerospike.com/docs/graph/develop/query/transactions/</td>
+</tr>
+<tr>
+<td>S11</td>
+<td>Indexing</td>
+<td>Official documentation</td>
+<td>Vertex index and scan controls</td>
+<td>https://aerospike.com/docs/graph/develop/query/indexing/</td>
+</tr>
+<tr>
+<td>S12</td>
+<td>Supernodes</td>
+<td>Official documentation</td>
+<td>Thresholds and filtered traversal guidance</td>
+<td>https://aerospike.com/docs/graph/develop/query/supernodes/</td>
+</tr>
+<tr>
+<td>S13</td>
+<td>Query threading</td>
+<td>Official documentation</td>
+<td>Per-query parallelization and batch/page controls</td>
+<td>https://aerospike.com/docs/graph/develop/query/query-threading/</td>
+</tr>
+<tr>
+<td>S14</td>
+<td>Cache management</td>
+<td>Official documentation</td>
+<td>Transactional and global record caches</td>
+<td>https://aerospike.com/docs/graph/manage/cache/</td>
+</tr>
+<tr>
+<td>S15</td>
+<td>Data types</td>
+<td>Official documentation</td>
+<td>Property and index type limitations</td>
+<td>https://aerospike.com/docs/graph/develop/query/data-type-support/</td>
+</tr>
+<tr>
+<td>S16</td>
+<td>TinkerPop feature support</td>
+<td>Official documentation</td>
+<td>Feature compatibility matrix</td>
+<td>https://aerospike.com/docs/graph/overview/tinkerpop/</td>
+</tr>
+<tr>
+<td>S17</td>
+<td>Configuration reference</td>
+<td>Official documentation</td>
+<td>AGS runtime knobs</td>
+<td>https://aerospike.com/docs/graph/reference/config/</td>
+</tr>
+<tr>
+<td>S18</td>
+<td>Metrics reference</td>
+<td>Official documentation</td>
+<td>Prometheus metric inventory</td>
+<td>https://aerospike.com/docs/graph/reference/metrics/</td>
+</tr>
+<tr>
+<td>S19</td>
+<td>Query tracing</td>
+<td>Official documentation</td>
+<td>Zipkin tracing contract</td>
+<td>https://aerospike.com/docs/graph/observe/query-tracing/</td>
+</tr>
+<tr>
+<td>S20</td>
+<td>Bulk load overview</td>
+<td>Official documentation</td>
+<td>Standalone and Spark paths</td>
+<td>https://aerospike.com/docs/graph/load/overview/</td>
+</tr>
+<tr>
+<td>S21</td>
+<td>Distributed bulk load</td>
+<td>Official documentation</td>
+<td>EMR and Dataproc workflow</td>
+<td>https://aerospike.com/docs/graph/load/distributed/</td>
+</tr>
+<tr>
+<td>S22</td>
+<td>Graph backup and restore</td>
+<td>Official documentation</td>
+<td>Graph delegates recovery to the underlying Database tooling; its current link still lands on the legacy asbackup page</td>
+<td>https://aerospike.com/docs/graph/manage/backup/</td>
+</tr>
+<tr>
+<td>S23</td>
+<td>Security</td>
+<td>Official documentation</td>
+<td>TLS, JWT RBAC, database RBAC, audit</td>
+<td>https://aerospike.com/docs/graph/manage/security/</td>
+</tr>
+<tr>
+<td>S24</td>
+<td>Multi-tenancy</td>
+<td>Official documentation</td>
+<td>Graph scoping in a shared namespace</td>
+<td>https://aerospike.com/docs/graph/manage/multi-tenant/</td>
+</tr>
+<tr>
+<td>S25</td>
+<td>Identity graph benchmark PDF</td>
+<td>Vendor benchmark</td>
+<td>AGS 2.4.2 / Database 7.1.0.9 test</td>
+<td>https://aerospike.com/files/benchmarks/aerospike-graph-performance-benchmark.pdf</td>
+</tr>
+<tr>
+<td>S26</td>
+<td>Graph 3.0 launch blog</td>
+<td>Vendor blog</td>
+<td>Ingest and footprint claims</td>
+<td>https://aerospike.com/blog/aerospike-graph-3-release/</td>
+</tr>
+<tr>
+<td>S27</td>
+<td>Architecture deep-dive blog</td>
+<td>Vendor blog</td>
+<td>Optimizer and record-model explanation</td>
+<td>https://aerospike.com/blog/graphing-database-architecture/</td>
+</tr>
+<tr>
+<td>S28</td>
+<td>Product editions and pricing</td>
+<td>Official commercial page</td>
+<td>Edition limits and data-volume licensing</td>
+<td>https://aerospike.com/products/features-and-editions/</td>
+</tr>
+<tr>
+<td>S29</td>
+<td>Database platform support</td>
+<td>Official documentation</td>
+<td>Current Database release matrix</td>
+<td>https://aerospike.com/docs/database/reference/platform-support</td>
+</tr>
+<tr>
+<td>S30</td>
+<td>Database limits</td>
+<td>Official documentation</td>
+<td>Cluster and object limits</td>
+<td>https://aerospike.com/docs/database/reference/limitations/</td>
+</tr>
+<tr>
+<td>S31</td>
+<td>Database storage configuration</td>
+<td>Official documentation</td>
+<td>Memory, device, and persistence modes</td>
+<td>https://aerospike.com/docs/database/manage/namespace/storage/config/</td>
+</tr>
+<tr>
+<td>S32</td>
+<td>Database FAQ</td>
+<td>Official documentation</td>
+<td>CE/SE/EE/FE boundaries</td>
+<td>https://aerospike.com/docs/database/reference/faq</td>
+</tr>
+<tr>
+<td>S33</td>
+<td>AGS public source snapshot</td>
+<td>Apache-2.0 source</td>
+<td>3.x-dev at ad0983e5519cbd3705f70113afd7df048c568045</td>
+<td>https://github.com/aerospike/aerospike-graph-service/tree/ad0983e5519cbd3705f70113afd7df048c568045</td>
+</tr>
+<tr>
+<td>S34</td>
+<td>AGS data model design</td>
+<td>Apache-2.0 source documentation</td>
+<td>Packed record layout</td>
+<td>https://github.com/aerospike/aerospike-graph-service/blob/ad0983e5519cbd3705f70113afd7df048c568045/docs/DATA_MODEL_DESIGN.md</td>
+</tr>
+<tr>
+<td>S35</td>
+<td>AGS architecture source map</td>
+<td>Apache-2.0 source documentation</td>
+<td>Modules and entry points</td>
+<td>https://github.com/aerospike/aerospike-graph-service/blob/ad0983e5519cbd3705f70113afd7df048c568045/docs/ARCHITECTURE.md</td>
+</tr>
+<tr>
+<td>S36</td>
+<td>AGS AerospikeOperations</td>
+<td>Apache-2.0 source</td>
+<td>Read/write and edge mutation pipeline</td>
+<td>https://github.com/aerospike/aerospike-graph-service/blob/ad0983e5519cbd3705f70113afd7df048c568045/aerospike-graph-gremlin/src/main/java/com/aerospike/firefly/io/aerospike/AerospikeOperations.java</td>
+</tr>
+<tr>
+<td>S37</td>
+<td>AGS configuration source</td>
+<td>Apache-2.0 source</td>
+<td>Code defaults and validators</td>
+<td>https://github.com/aerospike/aerospike-graph-service/blob/ad0983e5519cbd3705f70113afd7df048c568045/aerospike-graph-gremlin/src/main/java/com/aerospike/firefly/util/config/ConfigurationHelper.java</td>
+</tr>
+<tr>
+<td>S38</td>
+<td>AGS query code</td>
+<td>Apache-2.0 source</td>
+<td>Paged scans and secondary-index queries</td>
+<td>https://github.com/aerospike/aerospike-graph-service/tree/ad0983e5519cbd3705f70113afd7df048c568045/aerospike-graph-gremlin/src/main/java/com/aerospike/firefly/io/aerospike/query</td>
+</tr>
+<tr>
+<td>S39</td>
+<td>AGS traversal strategies</td>
+<td>Apache-2.0 source</td>
+<td>Rewrite implementations</td>
+<td>https://github.com/aerospike/aerospike-graph-service/tree/ad0983e5519cbd3705f70113afd7df048c568045/aerospike-graph-gremlin/src/main/java/com/aerospike/firefly/process/traversal/strategy</td>
+</tr>
+<tr>
+<td>S40</td>
+<td>AGS transaction implementation</td>
+<td>Apache-2.0 source</td>
+<td>TinkerPop transaction wrapper</td>
+<td>https://github.com/aerospike/aerospike-graph-service/blob/ad0983e5519cbd3705f70113afd7df048c568045/aerospike-graph-gremlin/src/main/java/com/aerospike/firefly/structure/transaction/FireflyTransaction.java</td>
+</tr>
+<tr>
+<td>S41</td>
+<td>AGS tests</td>
+<td>Apache-2.0 source</td>
+<td>431 test files observed in snapshot</td>
+<td>https://github.com/aerospike/aerospike-graph-service/tree/ad0983e5519cbd3705f70113afd7df048c568045/aerospike-graph-gremlin/src/test</td>
+</tr>
+<tr>
+<td>S42</td>
+<td>Graph examples</td>
+<td>Apache-2.0 source</td>
+<td>Examples at e2300bc201f949c4261ecd88b235dea1877fa088</td>
+<td>https://github.com/aerospike/aerospike-graph/tree/e2300bc201f949c4261ecd88b235dea1877fa088</td>
+</tr>
+<tr>
+<td>S43</td>
+<td>Database server source snapshot</td>
+<td>AGPL/community core source</td>
+<td>Server at 3c13b0de02f5ccaa6fffd8b9bbf3387b0c6a12dc</td>
+<td>https://github.com/aerospike/aerospike-server/tree/3c13b0de02f5ccaa6fffd8b9bbf3387b0c6a12dc</td>
+</tr>
+<tr>
+<td>S44</td>
+<td>Java client source snapshot</td>
+<td>Apache-2.0 source</td>
+<td>Client at 9d1f99a66f6590a3c489f6b0dd1589adcb8a1c12</td>
+<td>https://github.com/aerospike/aerospike-client-java/tree/9d1f99a66f6590a3c489f6b0dd1589adcb8a1c12</td>
+</tr>
+<tr>
+<td>S45</td>
+<td>Apache TinkerPop 3.7.3 reference</td>
+<td>Upstream documentation</td>
+<td>Language/runtime semantic oracle</td>
+<td>https://tinkerpop.apache.org/docs/3.7.3/reference/</td>
+</tr>
+<tr>
+<td>S46</td>
+<td>AGS v3.3.0-rc5 prerelease tag</td>
+<td>Signed public source tag</td>
+<td>Newest public prerelease observed on 2026-08-08; commit f4980a73f64bde1f3db0b30e917f3ec7fb147ce3</td>
+<td>https://github.com/aerospike/aerospike-graph-service/tree/f4980a73f64bde1f3db0b30e917f3ec7fb147ce3</td>
+</tr>
+<tr>
+<td>S47</td>
+<td>Graph 2.5 strong-consistency launch blog</td>
+<td>Vendor blog</td>
+<td>Database 8 transaction positioning and the explicit eventual-read caveat</td>
+<td>https://aerospike.com/blog/aerospike-graph-2-5-0-strong-consistency</td>
+</tr>
+<tr>
+<td>S48</td>
+<td>Aerospike Graph AI and MCP blog</td>
+<td>Vendor blog</td>
+<td>Newest Graph-specific blog found in the publication sweep; an integration/demo layer, not a storage-engine release</td>
+<td>https://aerospike.com/blog/aerospike-graph-ai-mcp-natural-language-queries/</td>
+</tr>
+<tr>
+<td>S49</td>
+<td>Legacy asbackup documentation</td>
+<td>Official documentation</td>
+<td>The target of the current Graph backup-page link; explicitly labeled legacy</td>
+<td>https://aerospike.com/docs/database/tools/backup-and-restore/asbackup</td>
+</tr>
+<tr>
+<td>S50</td>
+<td>Current Database backup and restore overview</td>
+<td>Official documentation</td>
+<td>ABS and absctl are current choices while asbackup/asrestore are legacy</td>
+<td>https://aerospike.com/docs/database/tools/backup-and-restore/overview/</td>
+</tr>
+</tbody>
+</table>

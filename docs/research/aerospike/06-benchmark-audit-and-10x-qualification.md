@@ -72,569 +72,548 @@ Cost comparisons use the same region, pricing term, discounts, replica policy, s
 
 ## Cross-engine benchmark cells
 
+### Reconstructing what the public benchmark proves
+
+The report establishes that Aerospike ran a large identity workload on a
+documented GCP topology and published load, latency, throughput, and cost
+summaries. Its largest dataset contains tens of billions of vertices and edges,
+which is meaningful engineering evidence. The graph shape is also unusually
+important: identity records form many small, localized subgraphs rather than
+one globally connected network with deep diameter or a heavy supernode tail.
+Short bounded traversals over that shape align well with point and batch record
+access. The result cannot be transferred automatically to fraud rings,
+recommendation graphs, RDF joins, unrestricted paths, or a graph dominated by
+celebrity vertices.
+
+The source's query implementation carries a fixed Database partition fact:
+
+```java
+final int partitions = 4096;
+```
+
+The extract is from pinned
+[`GraphQuery.java`](https://github.com/aerospike/aerospike-graph-service/blob/ad0983e5519cbd3705f70113afd7df048c568045/aerospike-graph-gremlin/src/main/java/com/aerospike/firefly/io/aerospike/query/GraphQuery.java).
+Paged query code reasons about those partitions, while point reads route by key
+digest. This distinction helps explain why AGS compute scale for a localized
+point workload does not prove equivalent scaling for global scans. Adding AGS
+instances can increase point-read concurrency against a fixed storage cluster;
+global query streams still share Database partition, query-thread, device, and
+network capacity.
+
+A credible rerun publishes the exact Gremlin bytecode, parameters, expected
+result cardinality distribution, optimized traversals, raw latency histograms,
+offered and achieved load, every error and timeout, retry attempts, cache
+preconditioning, Database command counts, and full configuration. The public
+PDF does not provide that complete artifact set. Its numbers remain useful
+vendor observations, but the missing material prevents recalculating percentiles
+or determining whether retry, warmup, or omitted failures affect a chart.
+
+| Claim form | Minimum evidence | Result if evidence is missing |
+| --- | --- | --- |
+| Faster point lookup | Same IDs, projection, cache budget, durability, concurrency, and raw latency distributions | Product-specific observation only |
+| Faster traversal | Same path semantics, degree buckets, result cardinality, cycle rules, and optimized plans | Non-comparable workload |
+| Higher throughput | Open-loop offered load, achieved load, errors, queueing, and saturated resource | Closed-loop QPS is insufficient |
+| Lower resource use | Complete AGS, Database, replica, index, storage, network, and background ledger | Partial-process comparison rejected |
+| Lower cost | Same region, term, replicas, SLO, support, license, backup, and operator scope | Cost marked unknown |
+| Tenfold win | Lower confidence bound above ten with correctness gates passing | No tenfold claim |
+| PB or trillion scale | Measured capacity, query SLO, recovery, and operational run at the named scale | Extrapolation labeled as a model only |
+
 Each cell is a named comparison, not one row in a blended marketing score. The dataset manifest fixes degree distribution, property widths, index definitions, graph shape, and expected result cardinality. Engines receive equivalent semantics, acknowledgement rules, replication, client locality, and either the same hardware budget or the same monthly cost ceiling.
 
 The load generator submits open-loop traffic and saves offered and achieved QPS, an HDR histogram, errors, timeouts, retries, and result hashes. Server-side plans, traces, command counts, CPU, memory, storage, network, background work, and cost are collected over the same interval. Cold and warm runs are separate. A case is non-comparable when an engine cannot implement the semantics; it is not removed from the published matrix.
 
-### Q001 : benchmark: ID vertex read cold
-
-**Purpose.** Compare authoritative point lookup without cache residency.
-
-**Evidence anchors.** S05,S10–S16,S18,S19,S25,S26,S28,S33–S45
-
-
-### Q002 : benchmark: ID vertex read warm
-
-**Purpose.** Compare hot point lookup with charged cache memory.
-
-**Evidence anchors.** S05,S10–S16,S18,S19,S25,S26,S28,S33–S45
-
-
-### Q003 : benchmark: batch 100 vertex IDs
-
-**Purpose.** Compare network and storage batching.
-
-**Evidence anchors.** S05,S10–S16,S18,S19,S25,S26,S28,S33–S45
-
-
-### Q004 : benchmark: 1-hop degree 4
-
-**Purpose.** Represent small bounded adjacency.
-
-**Evidence anchors.** S05,S10–S16,S18,S19,S25,S26,S28,S33–S45
-
-
-### Q005 : benchmark: 1-hop degree 32
-
-**Purpose.** Represent common identity expansion.
-
-**Evidence anchors.** S05,S10–S16,S18,S19,S25,S26,S28,S33–S45
-
-
-### Q006 : benchmark: 1-hop degree 512
-
-**Purpose.** Expose batching and response size.
-
-**Evidence anchors.** S05,S10–S16,S18,S19,S25,S26,S28,S33–S45
-
-
-### Q007 : benchmark: threshold-minus-one degree
-
-**Purpose.** Stress largest inline adjacency record.
-
-**Evidence anchors.** S05,S10–S16,S18,S19,S25,S26,S28,S33–S45
-
-
-### Q008 : benchmark: threshold-plus-one degree
-
-**Purpose.** Expose supernode path discontinuity.
-
-**Evidence anchors.** S05,S10–S16,S18,S19,S25,S26,S28,S33–S45
-
-
-### Q009 : benchmark: supernode 100K unfiltered
-
-**Purpose.** Measure unavoidable output and safety limits.
-
-**Evidence anchors.** S05,S10–S16,S18,S19,S25,S26,S28,S33–S45
-
-
-### Q010 : benchmark: supernode 100K 0.1% filter
-
-**Purpose.** Measure server-side predicate pushdown.
-
-**Evidence anchors.** S05,S10–S16,S18,S19,S25,S26,S28,S33–S45
-
-
-### Q011 : benchmark: 2-hop fanout 4
-
-**Purpose.** Bound frontier and path semantics.
-
-**Evidence anchors.** S05,S10–S16,S18,S19,S25,S26,S28,S33–S45
-
-
-### Q012 : benchmark: 2-hop fanout 32
-
-**Purpose.** Expose intermediate materialization.
-
-**Evidence anchors.** S05,S10–S16,S18,S19,S25,S26,S28,S33–S45
-
-
-### Q013 : benchmark: 3-hop identity SR5
-
-**Purpose.** Recreate vendor workload pattern exactly.
-
-**Evidence anchors.** S05,S10–S16,S18,S19,S25,S26,S28,S33–S45
-
-
-### Q014 : benchmark: 4-hop cyclic
-
-**Purpose.** Measure visited/path work on cycles.
-
-**Evidence anchors.** S05,S10–S16,S18,S19,S25,S26,S28,S33–S45
-
-
-### Q015 : benchmark: label root high selectivity
-
-**Purpose.** Compare indexed root planning.
-
-**Evidence anchors.** S05,S10–S16,S18,S19,S25,S26,S28,S33–S45
-
-
-### Q016 : benchmark: label root low selectivity
-
-**Purpose.** Expose large-index result stream.
-
-**Evidence anchors.** S05,S10–S16,S18,S19,S25,S26,S28,S33–S45
-
-
-### Q017 : benchmark: numeric equality index
-
-**Purpose.** Compare root filtering.
-
-**Evidence anchors.** S05,S10–S16,S18,S19,S25,S26,S28,S33–S45
-
-
-### Q018 : benchmark: numeric range index
-
-**Purpose.** Compare range path.
-
-**Evidence anchors.** S05,S10–S16,S18,S19,S25,S26,S28,S33–S45
-
-
-### Q019 : benchmark: string substring
-
-**Purpose.** Expose unsupported index and scan behavior.
-
-**Evidence anchors.** S05,S10–S16,S18,S19,S25,S26,S28,S33–S45
-
-
-### Q020 : benchmark: global vertex scan
-
-**Purpose.** Compare bandwidth-oriented scan separately.
-
-**Evidence anchors.** S05,S10–S16,S18,S19,S25,S26,S28,S33–S45
-
-
-### Q021 : benchmark: global edge scan
-
-**Purpose.** Reproduce AGS 3.2 version claim and competitors.
-
-**Evidence anchors.** S05,S10–S16,S18,S19,S25,S26,S28,S33–S45
-
-
-### Q022 : benchmark: local count
-
-**Purpose.** Compare adjacency metadata optimization.
-
-**Evidence anchors.** S05,S10–S16,S18,S19,S25,S26,S28,S33–S45
-
-
-### Q023 : benchmark: global exact count
-
-**Purpose.** Require exact consistent result.
-
-**Evidence anchors.** S05,S10–S16,S18,S19,S25,S26,S28,S33–S45
-
-
-### Q024 : benchmark: path materialization
-
-**Purpose.** Charge full path objects.
-
-**Evidence anchors.** S05,S10–S16,S18,S19,S25,S26,S28,S33–S45
-
-
-### Q025 : benchmark: dedup frontier
-
-**Purpose.** Charge state memory.
-
-**Evidence anchors.** S05,S10–S16,S18,S19,S25,S26,S28,S33–S45
-
-
-### Q026 : benchmark: top-K order
-
-**Purpose.** Require same ordering/tie semantics.
-
-**Evidence anchors.** S05,S10–S16,S18,S19,S25,S26,S28,S33–S45
-
-
-### Q027 : benchmark: add vertex
-
-**Purpose.** Compare durable acknowledged creation.
-
-**Evidence anchors.** S05,S10–S16,S18,S19,S25,S26,S28,S33–S45
-
-
-### Q028 : benchmark: update vertex property
-
-**Purpose.** Compare contention-free update.
-
-**Evidence anchors.** S05,S10–S16,S18,S19,S25,S26,S28,S33–S45
-
-
-### Q029 : benchmark: add ordinary edge
-
-**Purpose.** Compare three-record graph mutation semantics.
-
-**Evidence anchors.** S05,S10–S16,S18,S19,S25,S26,S28,S33–S45
-
-
-### Q030 : benchmark: add hot edge
-
-**Purpose.** Compare contention and retries.
-
-**Evidence anchors.** S05,S10–S16,S18,S19,S25,S26,S28,S33–S45
-
-
-### Q031 : benchmark: update edge property
-
-**Purpose.** Expose packed-record false sharing.
-
-**Evidence anchors.** S05,S10–S16,S18,S19,S25,S26,S28,S33–S45
-
-
-### Q032 : benchmark: delete edge
-
-**Purpose.** Compare cleanup and read visibility.
-
-**Evidence anchors.** S05,S10–S16,S18,S19,S25,S26,S28,S33–S45
-
-
-### Q033 : benchmark: delete ordinary vertex
-
-**Purpose.** Compare incident-edge atomicity.
-
-**Evidence anchors.** S05,S10–S16,S18,S19,S25,S26,S28,S33–S45
-
-
-### Q034 : benchmark: delete supernode
-
-**Purpose.** Mark semantic limitation, not comparable success.
-
-**Evidence anchors.** S05,S10–S16,S18,S19,S25,S26,S28,S33–S45
-
-
-### Q035 : benchmark: merge vertex
-
-**Purpose.** Require uniqueness and idempotence.
-
-**Evidence anchors.** S05,S10–S16,S18,S19,S25,S26,S28,S33–S45
-
-
-### Q036 : benchmark: merge edge
-
-**Purpose.** Require same match/lock semantics.
-
-**Evidence anchors.** S05,S10–S16,S18,S19,S25,S26,S28,S33–S45
-
-
-### Q037 : benchmark: explicit 10-record transaction
-
-**Purpose.** Compare atomic multi-query scope.
-
-**Evidence anchors.** S05,S10–S16,S18,S19,S25,S26,S28,S33–S45
-
-
-### Q038 : benchmark: explicit 1000-record transaction
-
-**Purpose.** Expose transaction overhead.
-
-**Evidence anchors.** S05,S10–S16,S18,S19,S25,S26,S28,S33–S45
-
-
-### Q039 : benchmark: read/write 95/5
-
-**Purpose.** Measure mixed online load.
-
-**Evidence anchors.** S05,S10–S16,S18,S19,S25,S26,S28,S33–S45
-
-
-### Q040 : benchmark: read/write 50/50
-
-**Purpose.** Expose packing contention and cache invalidity.
-
-**Evidence anchors.** S05,S10–S16,S18,S19,S25,S26,S28,S33–S45
-
-
-### Q041 : benchmark: scan plus point reads
-
-**Purpose.** Measure workload isolation.
-
-**Evidence anchors.** S05,S10–S16,S18,S19,S25,S26,S28,S33–S45
-
-
-### Q042 : benchmark: supernode plus point reads
-
-**Purpose.** Measure heavy-query isolation.
-
-**Evidence anchors.** S05,S10–S16,S18,S19,S25,S26,S28,S33–S45
-
-
-### Q043 : benchmark: one compute node
-
-**Purpose.** Establish resource-normalized baseline.
-
-**Evidence anchors.** S05,S10–S16,S18,S19,S25,S26,S28,S33–S45
-
-
-### Q044 : benchmark: 2 compute nodes
-
-**Purpose.** Measure scale efficiency.
-
-**Evidence anchors.** S05,S10–S16,S18,S19,S25,S26,S28,S33–S45
-
-
-### Q045 : benchmark: 4 compute nodes
-
-**Purpose.** Measure scale efficiency.
-
-**Evidence anchors.** S05,S10–S16,S18,S19,S25,S26,S28,S33–S45
-
-
-### Q046 : benchmark: 8 compute nodes
-
-**Purpose.** Measure storage approach to saturation.
-
-**Evidence anchors.** S05,S10–S16,S18,S19,S25,S26,S28,S33–S45
-
-
-### Q047 : benchmark: 16 compute nodes
-
-**Purpose.** Locate database/network bottleneck.
-
-**Evidence anchors.** S05,S10–S16,S18,S19,S25,S26,S28,S33–S45
-
-
-### Q048 : benchmark: 32 compute nodes
-
-**Purpose.** Reproduce vendor throughput topology.
-
-**Evidence anchors.** S05,S10–S16,S18,S19,S25,S26,S28,S33–S45
-
-
-### Q049 : benchmark: one DB node dev
-
-**Purpose.** Keep out of HA headline but measure floor.
-
-**Evidence anchors.** S05,S10–S16,S18,S19,S25,S26,S28,S33–S45
-
-
-### Q050 : benchmark: three DB nodes RF2
-
-**Purpose.** Production-shaped minimum.
-
-**Evidence anchors.** S05,S10–S16,S18,S19,S25,S26,S28,S33–S45
-
-
-### Q051 : benchmark: six DB nodes RF2
-
-**Purpose.** Measure storage horizontal scaling.
-
-**Evidence anchors.** S05,S10–S16,S18,S19,S25,S26,S28,S33–S45
-
-
-### Q052 : benchmark: RF3
-
-**Purpose.** Compare stronger replica capacity.
-
-**Evidence anchors.** S05,S10–S16,S18,S19,S25,S26,S28,S33–S45
-
-
-### Q053 : benchmark: rack-aware local
-
-**Purpose.** Measure cross-zone avoidance.
-
-**Evidence anchors.** S05,S10–S16,S18,S19,S25,S26,S28,S33–S45
-
-
-### Q054 : benchmark: rack failure
-
-**Purpose.** Measure degraded latency and cost.
-
-**Evidence anchors.** S05,S10–S16,S18,S19,S25,S26,S28,S33–S45
-
-
-### Q055 : benchmark: DB node failure
-
-**Purpose.** Measure p99.9 and errors through recovery.
-
-**Evidence anchors.** S05,S10–S16,S18,S19,S25,S26,S28,S33–S45
-
-
-### Q056 : benchmark: AGS node failure
-
-**Purpose.** Measure load balancer and in-flight requests.
-
-**Evidence anchors.** S05,S10–S16,S18,S19,S25,S26,S28,S33–S45
-
-
-### Q057 : benchmark: rebalance
-
-**Purpose.** Measure performance during add/remove.
-
-**Evidence anchors.** S05,S10–S16,S18,S19,S25,S26,S28,S33–S45
-
-
-### Q058 : benchmark: cold restart
-
-**Purpose.** Measure query-ready time and cache state.
-
-**Evidence anchors.** S05,S10–S16,S18,S19,S25,S26,S28,S33–S45
-
-
-### Q059 : benchmark: rolling patch
-
-**Purpose.** Measure operational availability.
-
-**Evidence anchors.** S05,S10–S16,S18,S19,S25,S26,S28,S33–S45
-
-
-### Q060 : benchmark: 1GB load
-
-**Purpose.** Small-loader overhead.
-
-**Evidence anchors.** S05,S10–S16,S18,S19,S25,S26,S28,S33–S45
-
-
-### Q061 : benchmark: 100GB load
-
-**Purpose.** Standalone/distributed crossover.
-
-**Evidence anchors.** S05,S10–S16,S18,S19,S25,S26,S28,S33–S45
-
-
-### Q062 : benchmark: 1TB load
-
-**Purpose.** Reproduce 3.0 ingest claim.
-
-**Evidence anchors.** S05,S10–S16,S18,S19,S25,S26,S28,S33–S45
-
-
-### Q063 : benchmark: 10TB load
-
-**Purpose.** Measure scale and Spark cost.
-
-**Evidence anchors.** S05,S10–S16,S18,S19,S25,S26,S28,S33–S45
-
-
-### Q064 : benchmark: incremental 1% load
-
-**Purpose.** Measure daily refresh economics.
-
-**Evidence anchors.** S05,S10–S16,S18,S19,S25,S26,S28,S33–S45
-
-
-### Q065 : benchmark: backup
-
-**Purpose.** Measure throughput and online impact.
-
-**Evidence anchors.** S05,S10–S16,S18,S19,S25,S26,S28,S33–S45
-
-
-### Q066 : benchmark: restore
-
-**Purpose.** Measure query-ready RTO.
-
-**Evidence anchors.** S05,S10–S16,S18,S19,S25,S26,S28,S33–S45
-
-
-### Q067 : benchmark: storage bytes per edge
-
-**Purpose.** Compare physical bytes including indexes/replicas.
-
-**Evidence anchors.** S05,S10–S16,S18,S19,S25,S26,S28,S33–S45
-
-
-### Q068 : benchmark: RAM bytes per edge
-
-**Purpose.** Compare full-cluster resident memory.
-
-**Evidence anchors.** S05,S10–S16,S18,S19,S25,S26,S28,S33–S45
-
-
-### Q069 : benchmark: CPU per million queries
-
-**Purpose.** Compare work efficiency at same SLO.
-
-**Evidence anchors.** S05,S10–S16,S18,S19,S25,S26,S28,S33–S45
-
-
-### Q070 : benchmark: joules per million queries
-
-**Purpose.** Optional energy efficiency.
-
-**Evidence anchors.** S05,S10–S16,S18,S19,S25,S26,S28,S33–S45
-
-
-### Q071 : benchmark: monthly cost at 10K QPS
-
-**Purpose.** Amortize all provisioned and licensed cost.
-
-**Evidence anchors.** S05,S10–S16,S18,S19,S25,S26,S28,S33–S45
-
-
-### Q072 : benchmark: monthly cost at 100K QPS
-
-**Purpose.** Measure scale and headroom.
-
-**Evidence anchors.** S05,S10–S16,S18,S19,S25,S26,S28,S33–S45
-
-
-### Q073 : benchmark: monthly cost at 600K QPS
-
-**Purpose.** Challenge vendor-scale claim fairly.
-
-**Evidence anchors.** S05,S10–S16,S18,S19,S25,S26,S28,S33–S45
-
-
-### Q074 : benchmark: cost per billion edges
-
-**Purpose.** Include vertex ratio and properties.
-
-**Evidence anchors.** S05,S10–S16,S18,S19,S25,S26,S28,S33–S45
-
-
-### Q075 : benchmark: cost per PB logical
-
-**Purpose.** Use capacity model with uncertainty.
-
-**Evidence anchors.** S05,S10–S16,S18,S19,S25,S26,S28,S33–S45
-
-
-### Q076 : benchmark: S3 cold point read zu
-
-**Purpose.** Measure zu's object-authoritative cold path.
-
-**Evidence anchors.** S05,S10–S16,S18,S19,S25,S26,S28,S33–S45
-
-
-### Q077 : benchmark: S3 warm point read zu
-
-**Purpose.** Measure bounded-cache steady state.
-
-**Evidence anchors.** S05,S10–S16,S18,S19,S25,S26,S28,S33–S45
-
-
-### Q078 : benchmark: S3 outage zu
-
-**Purpose.** Preserve system semantics and availability disclosure.
-
-**Evidence anchors.** S05,S10–S16,S18,S19,S25,S26,S28,S33–S45
-
-
-### Q079 : benchmark: semantic conformance corpus
-
-**Purpose.** Gate performance publication on equal results.
-
-**Evidence anchors.** S05,S10–S16,S18,S19,S25,S26,S28,S33–S45
-
-
-### Q080 : benchmark: unsupported feature ledger
-
-**Purpose.** Prevent silent workload deletion.
-
-**Evidence anchors.** S05,S10–S16,S18,S19,S25,S26,S28,S33–S45
-
+<table>
+<thead>
+<tr>
+<th>Case</th>
+<th>Subject</th>
+<th>Engineering question</th>
+<th>Evidence</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Q001</td>
+<td>benchmark: ID vertex read cold</td>
+<td>Compare authoritative point lookup without cache residency.</td>
+<td>S05,S10–S16,S18,S19,S25,S26,S28,S33–S45</td>
+</tr>
+<tr>
+<td>Q002</td>
+<td>benchmark: ID vertex read warm</td>
+<td>Compare hot point lookup with charged cache memory.</td>
+<td>S05,S10–S16,S18,S19,S25,S26,S28,S33–S45</td>
+</tr>
+<tr>
+<td>Q003</td>
+<td>benchmark: batch 100 vertex IDs</td>
+<td>Compare network and storage batching.</td>
+<td>S05,S10–S16,S18,S19,S25,S26,S28,S33–S45</td>
+</tr>
+<tr>
+<td>Q004</td>
+<td>benchmark: 1-hop degree 4</td>
+<td>Represent small bounded adjacency.</td>
+<td>S05,S10–S16,S18,S19,S25,S26,S28,S33–S45</td>
+</tr>
+<tr>
+<td>Q005</td>
+<td>benchmark: 1-hop degree 32</td>
+<td>Represent common identity expansion.</td>
+<td>S05,S10–S16,S18,S19,S25,S26,S28,S33–S45</td>
+</tr>
+<tr>
+<td>Q006</td>
+<td>benchmark: 1-hop degree 512</td>
+<td>Expose batching and response size.</td>
+<td>S05,S10–S16,S18,S19,S25,S26,S28,S33–S45</td>
+</tr>
+<tr>
+<td>Q007</td>
+<td>benchmark: threshold-minus-one degree</td>
+<td>Stress largest inline adjacency record.</td>
+<td>S05,S10–S16,S18,S19,S25,S26,S28,S33–S45</td>
+</tr>
+<tr>
+<td>Q008</td>
+<td>benchmark: threshold-plus-one degree</td>
+<td>Expose supernode path discontinuity.</td>
+<td>S05,S10–S16,S18,S19,S25,S26,S28,S33–S45</td>
+</tr>
+<tr>
+<td>Q009</td>
+<td>benchmark: supernode 100K unfiltered</td>
+<td>Measure unavoidable output and safety limits.</td>
+<td>S05,S10–S16,S18,S19,S25,S26,S28,S33–S45</td>
+</tr>
+<tr>
+<td>Q010</td>
+<td>benchmark: supernode 100K 0.1% filter</td>
+<td>Measure server-side predicate pushdown.</td>
+<td>S05,S10–S16,S18,S19,S25,S26,S28,S33–S45</td>
+</tr>
+<tr>
+<td>Q011</td>
+<td>benchmark: 2-hop fanout 4</td>
+<td>Bound frontier and path semantics.</td>
+<td>S05,S10–S16,S18,S19,S25,S26,S28,S33–S45</td>
+</tr>
+<tr>
+<td>Q012</td>
+<td>benchmark: 2-hop fanout 32</td>
+<td>Expose intermediate materialization.</td>
+<td>S05,S10–S16,S18,S19,S25,S26,S28,S33–S45</td>
+</tr>
+<tr>
+<td>Q013</td>
+<td>benchmark: 3-hop identity SR5</td>
+<td>Recreate vendor workload pattern exactly.</td>
+<td>S05,S10–S16,S18,S19,S25,S26,S28,S33–S45</td>
+</tr>
+<tr>
+<td>Q014</td>
+<td>benchmark: 4-hop cyclic</td>
+<td>Measure visited/path work on cycles.</td>
+<td>S05,S10–S16,S18,S19,S25,S26,S28,S33–S45</td>
+</tr>
+<tr>
+<td>Q015</td>
+<td>benchmark: label root high selectivity</td>
+<td>Compare indexed root planning.</td>
+<td>S05,S10–S16,S18,S19,S25,S26,S28,S33–S45</td>
+</tr>
+<tr>
+<td>Q016</td>
+<td>benchmark: label root low selectivity</td>
+<td>Expose large-index result stream.</td>
+<td>S05,S10–S16,S18,S19,S25,S26,S28,S33–S45</td>
+</tr>
+<tr>
+<td>Q017</td>
+<td>benchmark: numeric equality index</td>
+<td>Compare root filtering.</td>
+<td>S05,S10–S16,S18,S19,S25,S26,S28,S33–S45</td>
+</tr>
+<tr>
+<td>Q018</td>
+<td>benchmark: numeric range index</td>
+<td>Compare range path.</td>
+<td>S05,S10–S16,S18,S19,S25,S26,S28,S33–S45</td>
+</tr>
+<tr>
+<td>Q019</td>
+<td>benchmark: string substring</td>
+<td>Expose unsupported index and scan behavior.</td>
+<td>S05,S10–S16,S18,S19,S25,S26,S28,S33–S45</td>
+</tr>
+<tr>
+<td>Q020</td>
+<td>benchmark: global vertex scan</td>
+<td>Compare bandwidth-oriented scan separately.</td>
+<td>S05,S10–S16,S18,S19,S25,S26,S28,S33–S45</td>
+</tr>
+<tr>
+<td>Q021</td>
+<td>benchmark: global edge scan</td>
+<td>Reproduce AGS 3.2 version claim and competitors.</td>
+<td>S05,S10–S16,S18,S19,S25,S26,S28,S33–S45</td>
+</tr>
+<tr>
+<td>Q022</td>
+<td>benchmark: local count</td>
+<td>Compare adjacency metadata optimization.</td>
+<td>S05,S10–S16,S18,S19,S25,S26,S28,S33–S45</td>
+</tr>
+<tr>
+<td>Q023</td>
+<td>benchmark: global exact count</td>
+<td>Require exact consistent result.</td>
+<td>S05,S10–S16,S18,S19,S25,S26,S28,S33–S45</td>
+</tr>
+<tr>
+<td>Q024</td>
+<td>benchmark: path materialization</td>
+<td>Charge full path objects.</td>
+<td>S05,S10–S16,S18,S19,S25,S26,S28,S33–S45</td>
+</tr>
+<tr>
+<td>Q025</td>
+<td>benchmark: dedup frontier</td>
+<td>Charge state memory.</td>
+<td>S05,S10–S16,S18,S19,S25,S26,S28,S33–S45</td>
+</tr>
+<tr>
+<td>Q026</td>
+<td>benchmark: top-K order</td>
+<td>Require same ordering/tie semantics.</td>
+<td>S05,S10–S16,S18,S19,S25,S26,S28,S33–S45</td>
+</tr>
+<tr>
+<td>Q027</td>
+<td>benchmark: add vertex</td>
+<td>Compare durable acknowledged creation.</td>
+<td>S05,S10–S16,S18,S19,S25,S26,S28,S33–S45</td>
+</tr>
+<tr>
+<td>Q028</td>
+<td>benchmark: update vertex property</td>
+<td>Compare contention-free update.</td>
+<td>S05,S10–S16,S18,S19,S25,S26,S28,S33–S45</td>
+</tr>
+<tr>
+<td>Q029</td>
+<td>benchmark: add ordinary edge</td>
+<td>Compare three-record graph mutation semantics.</td>
+<td>S05,S10–S16,S18,S19,S25,S26,S28,S33–S45</td>
+</tr>
+<tr>
+<td>Q030</td>
+<td>benchmark: add hot edge</td>
+<td>Compare contention and retries.</td>
+<td>S05,S10–S16,S18,S19,S25,S26,S28,S33–S45</td>
+</tr>
+<tr>
+<td>Q031</td>
+<td>benchmark: update edge property</td>
+<td>Expose packed-record false sharing.</td>
+<td>S05,S10–S16,S18,S19,S25,S26,S28,S33–S45</td>
+</tr>
+<tr>
+<td>Q032</td>
+<td>benchmark: delete edge</td>
+<td>Compare cleanup and read visibility.</td>
+<td>S05,S10–S16,S18,S19,S25,S26,S28,S33–S45</td>
+</tr>
+<tr>
+<td>Q033</td>
+<td>benchmark: delete ordinary vertex</td>
+<td>Compare incident-edge atomicity.</td>
+<td>S05,S10–S16,S18,S19,S25,S26,S28,S33–S45</td>
+</tr>
+<tr>
+<td>Q034</td>
+<td>benchmark: delete supernode</td>
+<td>Mark semantic limitation, not comparable success.</td>
+<td>S05,S10–S16,S18,S19,S25,S26,S28,S33–S45</td>
+</tr>
+<tr>
+<td>Q035</td>
+<td>benchmark: merge vertex</td>
+<td>Require uniqueness and idempotence.</td>
+<td>S05,S10–S16,S18,S19,S25,S26,S28,S33–S45</td>
+</tr>
+<tr>
+<td>Q036</td>
+<td>benchmark: merge edge</td>
+<td>Require same match/lock semantics.</td>
+<td>S05,S10–S16,S18,S19,S25,S26,S28,S33–S45</td>
+</tr>
+<tr>
+<td>Q037</td>
+<td>benchmark: explicit 10-record transaction</td>
+<td>Compare atomic multi-query scope.</td>
+<td>S05,S10–S16,S18,S19,S25,S26,S28,S33–S45</td>
+</tr>
+<tr>
+<td>Q038</td>
+<td>benchmark: explicit 1000-record transaction</td>
+<td>Expose transaction overhead.</td>
+<td>S05,S10–S16,S18,S19,S25,S26,S28,S33–S45</td>
+</tr>
+<tr>
+<td>Q039</td>
+<td>benchmark: read/write 95/5</td>
+<td>Measure mixed online load.</td>
+<td>S05,S10–S16,S18,S19,S25,S26,S28,S33–S45</td>
+</tr>
+<tr>
+<td>Q040</td>
+<td>benchmark: read/write 50/50</td>
+<td>Expose packing contention and cache invalidity.</td>
+<td>S05,S10–S16,S18,S19,S25,S26,S28,S33–S45</td>
+</tr>
+<tr>
+<td>Q041</td>
+<td>benchmark: scan plus point reads</td>
+<td>Measure workload isolation.</td>
+<td>S05,S10–S16,S18,S19,S25,S26,S28,S33–S45</td>
+</tr>
+<tr>
+<td>Q042</td>
+<td>benchmark: supernode plus point reads</td>
+<td>Measure heavy-query isolation.</td>
+<td>S05,S10–S16,S18,S19,S25,S26,S28,S33–S45</td>
+</tr>
+<tr>
+<td>Q043</td>
+<td>benchmark: one compute node</td>
+<td>Establish resource-normalized baseline.</td>
+<td>S05,S10–S16,S18,S19,S25,S26,S28,S33–S45</td>
+</tr>
+<tr>
+<td>Q044</td>
+<td>benchmark: 2 compute nodes</td>
+<td>Measure scale efficiency.</td>
+<td>S05,S10–S16,S18,S19,S25,S26,S28,S33–S45</td>
+</tr>
+<tr>
+<td>Q045</td>
+<td>benchmark: 4 compute nodes</td>
+<td>Measure scale efficiency.</td>
+<td>S05,S10–S16,S18,S19,S25,S26,S28,S33–S45</td>
+</tr>
+<tr>
+<td>Q046</td>
+<td>benchmark: 8 compute nodes</td>
+<td>Measure storage approach to saturation.</td>
+<td>S05,S10–S16,S18,S19,S25,S26,S28,S33–S45</td>
+</tr>
+<tr>
+<td>Q047</td>
+<td>benchmark: 16 compute nodes</td>
+<td>Locate database/network bottleneck.</td>
+<td>S05,S10–S16,S18,S19,S25,S26,S28,S33–S45</td>
+</tr>
+<tr>
+<td>Q048</td>
+<td>benchmark: 32 compute nodes</td>
+<td>Reproduce vendor throughput topology.</td>
+<td>S05,S10–S16,S18,S19,S25,S26,S28,S33–S45</td>
+</tr>
+<tr>
+<td>Q049</td>
+<td>benchmark: one DB node dev</td>
+<td>Keep out of HA headline but measure floor.</td>
+<td>S05,S10–S16,S18,S19,S25,S26,S28,S33–S45</td>
+</tr>
+<tr>
+<td>Q050</td>
+<td>benchmark: three DB nodes RF2</td>
+<td>Production-shaped minimum.</td>
+<td>S05,S10–S16,S18,S19,S25,S26,S28,S33–S45</td>
+</tr>
+<tr>
+<td>Q051</td>
+<td>benchmark: six DB nodes RF2</td>
+<td>Measure storage horizontal scaling.</td>
+<td>S05,S10–S16,S18,S19,S25,S26,S28,S33–S45</td>
+</tr>
+<tr>
+<td>Q052</td>
+<td>benchmark: RF3</td>
+<td>Compare stronger replica capacity.</td>
+<td>S05,S10–S16,S18,S19,S25,S26,S28,S33–S45</td>
+</tr>
+<tr>
+<td>Q053</td>
+<td>benchmark: rack-aware local</td>
+<td>Measure cross-zone avoidance.</td>
+<td>S05,S10–S16,S18,S19,S25,S26,S28,S33–S45</td>
+</tr>
+<tr>
+<td>Q054</td>
+<td>benchmark: rack failure</td>
+<td>Measure degraded latency and cost.</td>
+<td>S05,S10–S16,S18,S19,S25,S26,S28,S33–S45</td>
+</tr>
+<tr>
+<td>Q055</td>
+<td>benchmark: DB node failure</td>
+<td>Measure p99.9 and errors through recovery.</td>
+<td>S05,S10–S16,S18,S19,S25,S26,S28,S33–S45</td>
+</tr>
+<tr>
+<td>Q056</td>
+<td>benchmark: AGS node failure</td>
+<td>Measure load balancer and in-flight requests.</td>
+<td>S05,S10–S16,S18,S19,S25,S26,S28,S33–S45</td>
+</tr>
+<tr>
+<td>Q057</td>
+<td>benchmark: rebalance</td>
+<td>Measure performance during add/remove.</td>
+<td>S05,S10–S16,S18,S19,S25,S26,S28,S33–S45</td>
+</tr>
+<tr>
+<td>Q058</td>
+<td>benchmark: cold restart</td>
+<td>Measure query-ready time and cache state.</td>
+<td>S05,S10–S16,S18,S19,S25,S26,S28,S33–S45</td>
+</tr>
+<tr>
+<td>Q059</td>
+<td>benchmark: rolling patch</td>
+<td>Measure operational availability.</td>
+<td>S05,S10–S16,S18,S19,S25,S26,S28,S33–S45</td>
+</tr>
+<tr>
+<td>Q060</td>
+<td>benchmark: 1GB load</td>
+<td>Small-loader overhead.</td>
+<td>S05,S10–S16,S18,S19,S25,S26,S28,S33–S45</td>
+</tr>
+<tr>
+<td>Q061</td>
+<td>benchmark: 100GB load</td>
+<td>Standalone/distributed crossover.</td>
+<td>S05,S10–S16,S18,S19,S25,S26,S28,S33–S45</td>
+</tr>
+<tr>
+<td>Q062</td>
+<td>benchmark: 1TB load</td>
+<td>Reproduce 3.0 ingest claim.</td>
+<td>S05,S10–S16,S18,S19,S25,S26,S28,S33–S45</td>
+</tr>
+<tr>
+<td>Q063</td>
+<td>benchmark: 10TB load</td>
+<td>Measure scale and Spark cost.</td>
+<td>S05,S10–S16,S18,S19,S25,S26,S28,S33–S45</td>
+</tr>
+<tr>
+<td>Q064</td>
+<td>benchmark: incremental 1% load</td>
+<td>Measure daily refresh economics.</td>
+<td>S05,S10–S16,S18,S19,S25,S26,S28,S33–S45</td>
+</tr>
+<tr>
+<td>Q065</td>
+<td>benchmark: backup</td>
+<td>Measure throughput and online impact.</td>
+<td>S05,S10–S16,S18,S19,S25,S26,S28,S33–S45</td>
+</tr>
+<tr>
+<td>Q066</td>
+<td>benchmark: restore</td>
+<td>Measure query-ready RTO.</td>
+<td>S05,S10–S16,S18,S19,S25,S26,S28,S33–S45</td>
+</tr>
+<tr>
+<td>Q067</td>
+<td>benchmark: storage bytes per edge</td>
+<td>Compare physical bytes including indexes/replicas.</td>
+<td>S05,S10–S16,S18,S19,S25,S26,S28,S33–S45</td>
+</tr>
+<tr>
+<td>Q068</td>
+<td>benchmark: RAM bytes per edge</td>
+<td>Compare full-cluster resident memory.</td>
+<td>S05,S10–S16,S18,S19,S25,S26,S28,S33–S45</td>
+</tr>
+<tr>
+<td>Q069</td>
+<td>benchmark: CPU per million queries</td>
+<td>Compare work efficiency at same SLO.</td>
+<td>S05,S10–S16,S18,S19,S25,S26,S28,S33–S45</td>
+</tr>
+<tr>
+<td>Q070</td>
+<td>benchmark: joules per million queries</td>
+<td>Optional energy efficiency.</td>
+<td>S05,S10–S16,S18,S19,S25,S26,S28,S33–S45</td>
+</tr>
+<tr>
+<td>Q071</td>
+<td>benchmark: monthly cost at 10K QPS</td>
+<td>Amortize all provisioned and licensed cost.</td>
+<td>S05,S10–S16,S18,S19,S25,S26,S28,S33–S45</td>
+</tr>
+<tr>
+<td>Q072</td>
+<td>benchmark: monthly cost at 100K QPS</td>
+<td>Measure scale and headroom.</td>
+<td>S05,S10–S16,S18,S19,S25,S26,S28,S33–S45</td>
+</tr>
+<tr>
+<td>Q073</td>
+<td>benchmark: monthly cost at 600K QPS</td>
+<td>Challenge vendor-scale claim fairly.</td>
+<td>S05,S10–S16,S18,S19,S25,S26,S28,S33–S45</td>
+</tr>
+<tr>
+<td>Q074</td>
+<td>benchmark: cost per billion edges</td>
+<td>Include vertex ratio and properties.</td>
+<td>S05,S10–S16,S18,S19,S25,S26,S28,S33–S45</td>
+</tr>
+<tr>
+<td>Q075</td>
+<td>benchmark: cost per PB logical</td>
+<td>Use capacity model with uncertainty.</td>
+<td>S05,S10–S16,S18,S19,S25,S26,S28,S33–S45</td>
+</tr>
+<tr>
+<td>Q076</td>
+<td>benchmark: S3 cold point read zu</td>
+<td>Measure zu's object-authoritative cold path.</td>
+<td>S05,S10–S16,S18,S19,S25,S26,S28,S33–S45</td>
+</tr>
+<tr>
+<td>Q077</td>
+<td>benchmark: S3 warm point read zu</td>
+<td>Measure bounded-cache steady state.</td>
+<td>S05,S10–S16,S18,S19,S25,S26,S28,S33–S45</td>
+</tr>
+<tr>
+<td>Q078</td>
+<td>benchmark: S3 outage zu</td>
+<td>Preserve system semantics and availability disclosure.</td>
+<td>S05,S10–S16,S18,S19,S25,S26,S28,S33–S45</td>
+</tr>
+<tr>
+<td>Q079</td>
+<td>benchmark: semantic conformance corpus</td>
+<td>Gate performance publication on equal results.</td>
+<td>S05,S10–S16,S18,S19,S25,S26,S28,S33–S45</td>
+</tr>
+<tr>
+<td>Q080</td>
+<td>benchmark: unsupported feature ledger</td>
+<td>Prevent silent workload deletion.</td>
+<td>S05,S10–S16,S18,S19,S25,S26,S28,S33–S45</td>
+</tr>
+</tbody>
+</table>
 
 ## Tenfold claim acceptance rule
 
@@ -646,217 +625,185 @@ Never publish “10x faster than all graph databases.” A defensible sentence i
 
 The retrieval date for web sources is the research cut. Git sources are pinned by commit. A source being official establishes what was stated or implemented; it does not independently establish a performance claim.
 
-### S05 : AGS 3.2.0 release notes
-
-**Type.** Official documentation
-
-**Audit note.** Global cache, set cardinality, performance changes
-
-**URL.** https://aerospike.com/docs/graph/release/3-2-0/
-
-
-### S10 : Transaction contract
-
-**Type.** Official documentation
-
-**Audit note.** Read, mutation, SC, AP, and MRT distinctions
-
-**URL.** https://aerospike.com/docs/graph/develop/query/transactions/
-
-
-### S11 : Indexing
-
-**Type.** Official documentation
-
-**Audit note.** Vertex index and scan controls
-
-**URL.** https://aerospike.com/docs/graph/develop/query/indexing/
-
-
-### S12 : Supernodes
-
-**Type.** Official documentation
-
-**Audit note.** Thresholds and filtered traversal guidance
-
-**URL.** https://aerospike.com/docs/graph/develop/query/supernodes/
-
-
-### S13 : Query threading
-
-**Type.** Official documentation
-
-**Audit note.** Per-query parallelization and batch/page controls
-
-**URL.** https://aerospike.com/docs/graph/develop/query/query-threading/
-
-
-### S14 : Cache management
-
-**Type.** Official documentation
-
-**Audit note.** Transactional and global record caches
-
-**URL.** https://aerospike.com/docs/graph/manage/cache/
-
-
-### S15 : Data types
-
-**Type.** Official documentation
-
-**Audit note.** Property and index type limitations
-
-**URL.** https://aerospike.com/docs/graph/develop/query/data-type-support/
-
-
-### S16 : TinkerPop feature support
-
-**Type.** Official documentation
-
-**Audit note.** Feature compatibility matrix
-
-**URL.** https://aerospike.com/docs/graph/overview/tinkerpop/
-
-
-### S18 : Metrics reference
-
-**Type.** Official documentation
-
-**Audit note.** Prometheus metric inventory
-
-**URL.** https://aerospike.com/docs/graph/reference/metrics/
-
-
-### S19 : Query tracing
-
-**Type.** Official documentation
-
-**Audit note.** Zipkin tracing contract
-
-**URL.** https://aerospike.com/docs/graph/observe/query-tracing/
-
-
-### S25 : Identity graph benchmark PDF
-
-**Type.** Vendor benchmark
-
-**Audit note.** AGS 2.4.2 / Database 7.1.0.9 test
-
-**URL.** https://aerospike.com/files/benchmarks/aerospike-graph-performance-benchmark.pdf
-
-
-### S26 : Graph 3.0 launch blog
-
-**Type.** Vendor blog
-
-**Audit note.** Ingest and footprint claims
-
-**URL.** https://aerospike.com/blog/aerospike-graph-3-release/
-
-
-### S28 : Product editions and pricing
-
-**Type.** Official commercial page
-
-**Audit note.** Edition limits and data-volume licensing
-
-**URL.** https://aerospike.com/products/features-and-editions/
-
-
-### S33 : AGS public source snapshot
-
-**Type.** Apache-2.0 source
-
-**Audit note.** 3.x-dev at ad0983e5519cbd3705f70113afd7df048c568045
-
-**URL.** https://github.com/aerospike/aerospike-graph-service/tree/ad0983e5519cbd3705f70113afd7df048c568045
-
-
-### S34 : AGS data model design
-
-**Type.** Apache-2.0 source documentation
-
-**Audit note.** Packed record layout
-
-**URL.** https://github.com/aerospike/aerospike-graph-service/blob/ad0983e5519cbd3705f70113afd7df048c568045/docs/DATA_MODEL_DESIGN.md
-
-
-### S36 : AGS AerospikeOperations
-
-**Type.** Apache-2.0 source
-
-**Audit note.** Read/write and edge mutation pipeline
-
-**URL.** https://github.com/aerospike/aerospike-graph-service/blob/ad0983e5519cbd3705f70113afd7df048c568045/aerospike-graph-gremlin/src/main/java/com/aerospike/firefly/io/aerospike/AerospikeOperations.java
-
-
-### S37 : AGS configuration source
-
-**Type.** Apache-2.0 source
-
-**Audit note.** Code defaults and validators
-
-**URL.** https://github.com/aerospike/aerospike-graph-service/blob/ad0983e5519cbd3705f70113afd7df048c568045/aerospike-graph-gremlin/src/main/java/com/aerospike/firefly/util/config/ConfigurationHelper.java
-
-
-### S38 : AGS query code
-
-**Type.** Apache-2.0 source
-
-**Audit note.** Paged scans and secondary-index queries
-
-**URL.** https://github.com/aerospike/aerospike-graph-service/tree/ad0983e5519cbd3705f70113afd7df048c568045/aerospike-graph-gremlin/src/main/java/com/aerospike/firefly/io/aerospike/query
-
-
-### S39 : AGS traversal strategies
-
-**Type.** Apache-2.0 source
-
-**Audit note.** Rewrite implementations
-
-**URL.** https://github.com/aerospike/aerospike-graph-service/tree/ad0983e5519cbd3705f70113afd7df048c568045/aerospike-graph-gremlin/src/main/java/com/aerospike/firefly/process/traversal/strategy
-
-
-### S40 : AGS transaction implementation
-
-**Type.** Apache-2.0 source
-
-**Audit note.** TinkerPop transaction wrapper
-
-**URL.** https://github.com/aerospike/aerospike-graph-service/blob/ad0983e5519cbd3705f70113afd7df048c568045/aerospike-graph-gremlin/src/main/java/com/aerospike/firefly/structure/transaction/FireflyTransaction.java
-
-
-### S41 : AGS tests
-
-**Type.** Apache-2.0 source
-
-**Audit note.** 431 test files observed in snapshot
-
-**URL.** https://github.com/aerospike/aerospike-graph-service/tree/ad0983e5519cbd3705f70113afd7df048c568045/aerospike-graph-gremlin/src/test
-
-
-### S43 : Database server source snapshot
-
-**Type.** AGPL/community core source
-
-**Audit note.** Server at 3c13b0de02f5ccaa6fffd8b9bbf3387b0c6a12dc
-
-**URL.** https://github.com/aerospike/aerospike-server/tree/3c13b0de02f5ccaa6fffd8b9bbf3387b0c6a12dc
-
-
-### S44 : Java client source snapshot
-
-**Type.** Apache-2.0 source
-
-**Audit note.** Client at 9d1f99a66f6590a3c489f6b0dd1589adcb8a1c12
-
-**URL.** https://github.com/aerospike/aerospike-client-java/tree/9d1f99a66f6590a3c489f6b0dd1589adcb8a1c12
-
-
-### S45 : Apache TinkerPop 3.7.3 reference
-
-**Type.** Upstream documentation
-
-**Audit note.** Language/runtime semantic oracle
-
-**URL.** https://tinkerpop.apache.org/docs/3.7.3/reference/
+<table>
+<thead>
+<tr>
+<th>ID</th>
+<th>Source</th>
+<th>Class</th>
+<th>Audit use</th>
+<th>Link</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>S05</td>
+<td>AGS 3.2.0 release notes</td>
+<td>Official documentation</td>
+<td>Global cache, set cardinality, performance changes</td>
+<td>https://aerospike.com/docs/graph/release/3-2-0/</td>
+</tr>
+<tr>
+<td>S10</td>
+<td>Transaction contract</td>
+<td>Official documentation</td>
+<td>Read, mutation, SC, AP, and MRT distinctions</td>
+<td>https://aerospike.com/docs/graph/develop/query/transactions/</td>
+</tr>
+<tr>
+<td>S11</td>
+<td>Indexing</td>
+<td>Official documentation</td>
+<td>Vertex index and scan controls</td>
+<td>https://aerospike.com/docs/graph/develop/query/indexing/</td>
+</tr>
+<tr>
+<td>S12</td>
+<td>Supernodes</td>
+<td>Official documentation</td>
+<td>Thresholds and filtered traversal guidance</td>
+<td>https://aerospike.com/docs/graph/develop/query/supernodes/</td>
+</tr>
+<tr>
+<td>S13</td>
+<td>Query threading</td>
+<td>Official documentation</td>
+<td>Per-query parallelization and batch/page controls</td>
+<td>https://aerospike.com/docs/graph/develop/query/query-threading/</td>
+</tr>
+<tr>
+<td>S14</td>
+<td>Cache management</td>
+<td>Official documentation</td>
+<td>Transactional and global record caches</td>
+<td>https://aerospike.com/docs/graph/manage/cache/</td>
+</tr>
+<tr>
+<td>S15</td>
+<td>Data types</td>
+<td>Official documentation</td>
+<td>Property and index type limitations</td>
+<td>https://aerospike.com/docs/graph/develop/query/data-type-support/</td>
+</tr>
+<tr>
+<td>S16</td>
+<td>TinkerPop feature support</td>
+<td>Official documentation</td>
+<td>Feature compatibility matrix</td>
+<td>https://aerospike.com/docs/graph/overview/tinkerpop/</td>
+</tr>
+<tr>
+<td>S18</td>
+<td>Metrics reference</td>
+<td>Official documentation</td>
+<td>Prometheus metric inventory</td>
+<td>https://aerospike.com/docs/graph/reference/metrics/</td>
+</tr>
+<tr>
+<td>S19</td>
+<td>Query tracing</td>
+<td>Official documentation</td>
+<td>Zipkin tracing contract</td>
+<td>https://aerospike.com/docs/graph/observe/query-tracing/</td>
+</tr>
+<tr>
+<td>S25</td>
+<td>Identity graph benchmark PDF</td>
+<td>Vendor benchmark</td>
+<td>AGS 2.4.2 / Database 7.1.0.9 test</td>
+<td>https://aerospike.com/files/benchmarks/aerospike-graph-performance-benchmark.pdf</td>
+</tr>
+<tr>
+<td>S26</td>
+<td>Graph 3.0 launch blog</td>
+<td>Vendor blog</td>
+<td>Ingest and footprint claims</td>
+<td>https://aerospike.com/blog/aerospike-graph-3-release/</td>
+</tr>
+<tr>
+<td>S28</td>
+<td>Product editions and pricing</td>
+<td>Official commercial page</td>
+<td>Edition limits and data-volume licensing</td>
+<td>https://aerospike.com/products/features-and-editions/</td>
+</tr>
+<tr>
+<td>S33</td>
+<td>AGS public source snapshot</td>
+<td>Apache-2.0 source</td>
+<td>3.x-dev at ad0983e5519cbd3705f70113afd7df048c568045</td>
+<td>https://github.com/aerospike/aerospike-graph-service/tree/ad0983e5519cbd3705f70113afd7df048c568045</td>
+</tr>
+<tr>
+<td>S34</td>
+<td>AGS data model design</td>
+<td>Apache-2.0 source documentation</td>
+<td>Packed record layout</td>
+<td>https://github.com/aerospike/aerospike-graph-service/blob/ad0983e5519cbd3705f70113afd7df048c568045/docs/DATA_MODEL_DESIGN.md</td>
+</tr>
+<tr>
+<td>S36</td>
+<td>AGS AerospikeOperations</td>
+<td>Apache-2.0 source</td>
+<td>Read/write and edge mutation pipeline</td>
+<td>https://github.com/aerospike/aerospike-graph-service/blob/ad0983e5519cbd3705f70113afd7df048c568045/aerospike-graph-gremlin/src/main/java/com/aerospike/firefly/io/aerospike/AerospikeOperations.java</td>
+</tr>
+<tr>
+<td>S37</td>
+<td>AGS configuration source</td>
+<td>Apache-2.0 source</td>
+<td>Code defaults and validators</td>
+<td>https://github.com/aerospike/aerospike-graph-service/blob/ad0983e5519cbd3705f70113afd7df048c568045/aerospike-graph-gremlin/src/main/java/com/aerospike/firefly/util/config/ConfigurationHelper.java</td>
+</tr>
+<tr>
+<td>S38</td>
+<td>AGS query code</td>
+<td>Apache-2.0 source</td>
+<td>Paged scans and secondary-index queries</td>
+<td>https://github.com/aerospike/aerospike-graph-service/tree/ad0983e5519cbd3705f70113afd7df048c568045/aerospike-graph-gremlin/src/main/java/com/aerospike/firefly/io/aerospike/query</td>
+</tr>
+<tr>
+<td>S39</td>
+<td>AGS traversal strategies</td>
+<td>Apache-2.0 source</td>
+<td>Rewrite implementations</td>
+<td>https://github.com/aerospike/aerospike-graph-service/tree/ad0983e5519cbd3705f70113afd7df048c568045/aerospike-graph-gremlin/src/main/java/com/aerospike/firefly/process/traversal/strategy</td>
+</tr>
+<tr>
+<td>S40</td>
+<td>AGS transaction implementation</td>
+<td>Apache-2.0 source</td>
+<td>TinkerPop transaction wrapper</td>
+<td>https://github.com/aerospike/aerospike-graph-service/blob/ad0983e5519cbd3705f70113afd7df048c568045/aerospike-graph-gremlin/src/main/java/com/aerospike/firefly/structure/transaction/FireflyTransaction.java</td>
+</tr>
+<tr>
+<td>S41</td>
+<td>AGS tests</td>
+<td>Apache-2.0 source</td>
+<td>431 test files observed in snapshot</td>
+<td>https://github.com/aerospike/aerospike-graph-service/tree/ad0983e5519cbd3705f70113afd7df048c568045/aerospike-graph-gremlin/src/test</td>
+</tr>
+<tr>
+<td>S43</td>
+<td>Database server source snapshot</td>
+<td>AGPL/community core source</td>
+<td>Server at 3c13b0de02f5ccaa6fffd8b9bbf3387b0c6a12dc</td>
+<td>https://github.com/aerospike/aerospike-server/tree/3c13b0de02f5ccaa6fffd8b9bbf3387b0c6a12dc</td>
+</tr>
+<tr>
+<td>S44</td>
+<td>Java client source snapshot</td>
+<td>Apache-2.0 source</td>
+<td>Client at 9d1f99a66f6590a3c489f6b0dd1589adcb8a1c12</td>
+<td>https://github.com/aerospike/aerospike-client-java/tree/9d1f99a66f6590a3c489f6b0dd1589adcb8a1c12</td>
+</tr>
+
+<tr>
+<td>S45</td>
+<td>Apache TinkerPop 3.7.3 reference</td>
+<td>Upstream documentation</td>
+<td>Language/runtime semantic oracle</td>
+<td>https://tinkerpop.apache.org/docs/3.7.3/reference/</td>
+</tr>
+</tbody>
+</table>
