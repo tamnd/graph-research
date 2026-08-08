@@ -42,6 +42,10 @@ Start with:
 - [Target architecture](./docs/research/system-target-architecture.md)
 - [Reproducible benchmark and 10x protocol](./docs/research/system-benchmark-and-10x-claim.md)
 
+Deep source audits:
+
+- [Aerospike Graph](./docs/research/aerospike/00-index.md)
+
 ## License
 
 The repository's original text and scripts are available under the

@@ -206,6 +206,14 @@ def engine_lines(e: Engine) -> list[str]:
         "")
     for i, fact in enumerate(e.facts, 1):
         add(lines, f"- F{i:02d} — {fact}")
+    if e.slug == "aerospike_graph":
+        add(lines,
+            "",
+            "### Dedicated Aerospike refactor",
+            "",
+            "This breadth-oriented file is retained for corpus compatibility. The current source-level audit is the multi-spec [Aerospike dossier](./aerospike/00-index.md), which pins Graph 3.2.3 and public `3.3.0-SNAPSHOT` source, corrects the read/transaction consistency summary, reconstructs the packed record layout, audits the 2025 identity benchmark, and defines the qualification program.",
+            "",
+            "Do not use this overview's compact transaction, licensing, scale, or storage statements when the dedicated dossier supplies a version-qualified answer.")
     add(lines,
         "",
         "### Bottom-line fit against zu's target",
@@ -444,7 +452,10 @@ def index_lines() -> list[str]:
         "",
     ]
     for e in ENGINES:
-        lines.append(f"- [{e.name}](./engine-{e.slug}.md) — {e.family}; {e.status}.")
+        if e.slug == "aerospike_graph":
+            lines.append(f"- [{e.name} — dedicated 2026 source audit](./aerospike/00-index.md) — {e.family}; released 3.2.3 plus pinned public 3.3.0-SNAPSHOT source. [Breadth overview](./engine-{e.slug}.md).")
+        else:
+            lines.append(f"- [{e.name}](./engine-{e.slug}.md) — {e.family}; {e.status}.")
     lines += [
         "",
         "## Coverage classes",
